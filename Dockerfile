@@ -37,14 +37,7 @@ RUN mkdir -p /data
 
 # Default environment variables
 ENV PORT=8080 \
-    HF2S3_DB=/data/hf2s3_metadata.db \
-    ADMIN_USERNAME=admin \
-    ADMIN_PASSWORD=admin123 \
-    HF2S3_ACCESS_KEY=hf2s3-access-key \
-    HF2S3_SECRET_KEY=hf2s3-secret-key \
-    HF2S3_MASTER_KEY=hf2s3-aes-master-passphrase-2026 \
-    HF2S3_CHUNK_SIZE_MB=32 \
-    HF2S3_REGION=us-east-1
+    HF2S3_DB=/data/hf2s3_metadata.db
 
 # Expose HTTP port (S3 Gateway & Web Console)
 EXPOSE 8080
