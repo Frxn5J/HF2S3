@@ -1,0 +1,38 @@
+# Environment and Secrets
+.env
+.env.*
+!.env.example
+
+# Compiled Binaries and Output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/hf2s3
+/benchmark
+bin/
+dist/
+
+# SQLite Database and WAL Files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Temporary Test and Benchmark Data
+bench_*.bin
+test_*.bin
+*.tmp
+*.temp
+*.log
+
+# Editor and OS Artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

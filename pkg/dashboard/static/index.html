@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HF2S3: Hugging Face Multi-Account S3/R2 Cloud Gateway</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo-mark">
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>HF2S3</h1>
+          <span class="badge-sub">Cloud Gateway</span>
+        </div>
+      </div>
+
+      <nav class="nav-menu">
+        <button class="nav-item active" data-tab="overview">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          <span>Panel General</span>
+        </button>
+        <button class="nav-item" data-tab="accounts">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          <span>Cuentas HF</span>
+          <span class="pill-badge" id="navAccountsCount">0</span>
+        </button>
+        <button class="nav-item" data-tab="storage">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+          <span>Buckets y Archivos</span>
+        </button>
+        <button class="nav-item" data-tab="connect">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+          <span>Conexión S3 / R2</span>
+        </button>
+        <button class="nav-item" data-tab="settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <span>Configuración</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="encryption-tag">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          <span>AES-256-GCM Activo</span>
+        </div>
+        <div class="status-indicator">
+          <span class="status-dot online"></span>
+          <span>Gateway Online</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="topbar-title">
+          <h2 id="pageTitle">Panel General</h2>
+          <p id="pageSubtitle">Monitoreo del pool unificado de almacenamiento y nodos Hugging Face</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" id="btnRefresh" title="Actualizar datos">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <span>Actualizar</span>
+          </button>
+          <button class="btn btn-primary" id="btnQuickUpload" title="Subida rápida">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            <span>Subir Archivo</span>
+          </button>
+          <div class="user-chip" id="userChip">
+            <span class="user-chip-icon">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            </span>
+            <span class="user-chip-name" id="displayUsername">admin</span>
+            <button class="btn btn-outline btn-xs" id="btnLogout" title="Cerrar Sesión">Salir</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- TAB 1: OVERVIEW -->
+      <section class="tab-pane active" id="pane-overview">
+        <!-- Storage Hero Metric -->
+        <div class="hero-metric-card">
+          <div class="hero-left">
+            <span class="card-label">Capacidad del Pool Distribuido</span>
+            <div class="hero-value-wrap">
+              <h3 class="hero-val" id="metricTotalCapacity">0 GB</h3>
+              <span class="hero-sub" id="metricStoragePercent">0% usado</span>
+            </div>
+            <!-- Progress Bar -->
+            <div class="progress-bar-wrap">
+              <div class="progress-bar" id="poolProgressBar" style="width: 0%;"></div>
+            </div>
+            <div class="progress-stats">
+              <span><strong>Usado:</strong> <span id="metricUsedStorage">0 MB</span></span>
+              <span><strong>Disponible:</strong> <span id="metricFreeStorage">0 GB</span></span>
+            </div>
+          </div>
+          <div class="hero-right">
+            <div class="quick-pill">
+              <span class="pill-title">Cuentas Activas</span>
+              <span class="pill-number" id="metricActiveAccounts">0</span>
+            </div>
+            <div class="quick-pill">
+              <span class="pill-title">Buckets</span>
+              <span class="pill-number" id="metricBucketsCount">0</span>
+            </div>
+            <div class="quick-pill">
+              <span class="pill-title">Objetos Almacenados</span>
+              <span class="pill-number" id="metricObjectsCount">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Grid of accounts status -->
+        <div class="section-header">
+          <h3>Nodos de Almacenamiento (Cuentas Hugging Face)</h3>
+          <button class="btn btn-sm btn-outline" id="btnGoAddAccount">+ Conectar Cuenta</button>
+        </div>
+        <div class="accounts-grid" id="overviewAccountsGrid">
+          <!-- Rendered dynamically -->
+        </div>
+      </section>
+
+      <!-- TAB 2: ACCOUNTS -->
+      <section class="tab-pane" id="pane-accounts">
+        <div class="pane-header-actions">
+          <div>
+            <h3>Gestión de Cuentas Hugging Face</h3>
+            <p>Cada cuenta aporta hasta 100 GB en repositorios de datasets privados cifrados.</p>
+          </div>
+          <button class="btn btn-primary" id="btnOpenAddAccountModal">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>Agregar Cuenta Hugging Face</span>
+          </button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Cuenta / Usuario</th>
+                <th>Repositorio Privado</th>
+                <th>Espacio Usado</th>
+                <th>Cuota Asignada</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="accountsTableBody">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB 3: BUCKETS & FILES -->
+      <section class="tab-pane" id="pane-storage">
+        <div class="storage-explorer-layout">
+          <!-- Left: Buckets list -->
+          <div class="buckets-sidebar">
+            <div class="buckets-header">
+              <h4>Buckets S3</h4>
+              <button class="btn btn-xs btn-primary" id="btnCreateBucketModal">+ Crear</button>
+            </div>
+            <div class="bucket-list" id="bucketsListContainer">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+
+          <!-- Right: Files browser -->
+          <div class="files-browser">
+            <div class="files-toolbar">
+              <div class="current-bucket-info">
+                <span class="active-bucket-title" id="activeBucketName">Selecciona un bucket</span>
+                <span class="bucket-item-badge" id="activeBucketStats">0 archivos</span>
+              </div>
+              <div class="files-actions">
+                <input type="text" class="input-search" id="fileSearchInput" placeholder="Filtrar archivos..." />
+                <button class="btn btn-primary btn-sm" id="btnUploadToFileBrowser">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                  <span>Subir a este Bucket</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Upload drag dropzone -->
+            <div class="upload-dropzone" id="uploadDropzone">
+              <input type="file" id="fileUploadInput" hidden />
+              <div class="dropzone-inner">
+                <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                <p>Arrastra archivos aquí o <span class="highlight-link">explora en tu equipo</span></p>
+                <span class="dropzone-hint">Los archivos se dividen en chunks, se cifran con AES-256-GCM y se distribuyen entre tus cuentas HF</span>
+              </div>
+              <div class="upload-progress-card hidden" id="uploadProgressCard">
+                <span class="upload-file-name" id="uploadingFileName">Subiendo archivo...</span>
+                <div class="progress-bar-wrap">
+                  <div class="progress-bar animated" id="uploadProgressBar" style="width: 50%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Files table -->
+            <div class="table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Nombre de Archivo</th>
+                    <th>Tamaño</th>
+                    <th>ETag S3</th>
+                    <th>Tipo</th>
+                    <th>Modificado</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody id="filesTableBody">
+                  <tr>
+                    <td colspan="6" class="empty-state">Selecciona un bucket para explorar sus archivos</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: S3 / R2 CONNECTION -->
+      <section class="tab-pane" id="pane-connect">
+        <div class="connect-grid">
+          <!-- Credentials card -->
+          <div class="glass-card connect-card">
+            <h3>Credenciales S3 / Cloudflare R2</h3>
+            <p>Usa estas credenciales para conectar Rclone, Cyberduck, AWS CLI, DuckDB, FileZilla Pro o cualquier cliente compatible con S3.</p>
+
+            <div class="credential-item">
+              <label>S3 Endpoint URL</label>
+              <div class="copy-input-group">
+                <input type="text" id="cfgEndpoint" readonly value="http://localhost:8080" />
+                <button class="btn btn-secondary btn-copy" data-target="cfgEndpoint">Copiar</button>
+              </div>
+            </div>
+
+            <div class="credential-item">
+              <label>Access Key ID</label>
+              <div class="copy-input-group">
+                <input type="text" id="cfgAccessKey" readonly value="hf2s3-access-key" />
+                <button class="btn btn-secondary btn-copy" data-target="cfgAccessKey">Copiar</button>
+              </div>
+            </div>
+
+            <div class="credential-item">
+              <label>Secret Access Key</label>
+              <div class="copy-input-group">
+                <input type="password" id="cfgSecretKey" readonly value="hf2s3-secret-key" />
+                <button class="btn btn-secondary btn-copy" data-target="cfgSecretKey">Copiar</button>
+              </div>
+            </div>
+
+            <div class="credential-item">
+              <label>Región S3</label>
+              <div class="copy-input-group">
+                <input type="text" id="cfgRegion" readonly value="us-east-1" />
+                <button class="btn btn-secondary btn-copy" data-target="cfgRegion">Copiar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Snippets tabbed card -->
+          <div class="glass-card snippets-card">
+            <div class="snippets-nav">
+              <button class="snippet-tab active" data-snippet="rclone">Rclone (Montar Disco)</button>
+              <button class="snippet-tab" data-snippet="awscli">AWS CLI</button>
+              <button class="snippet-tab" data-snippet="python">Python (Boto3)</button>
+            </div>
+            <div class="snippet-code-box">
+              <pre><code id="snippetCodeDisplay">Cargando configuración...</code></pre>
+              <button class="btn btn-primary btn-sm btn-copy-snippet" id="btnCopySnippet">Copiar Configuración</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: SETTINGS -->
+      <section class="tab-pane" id="pane-settings">
+        <div class="glass-card settings-box">
+          <h3>Configuraciones del Servidor</h3>
+          <p>Ajustes de seguridad, credenciales y motor de cifrado.</p>
+
+          <form id="settingsForm">
+            <div class="form-group">
+              <label>Nuevo Access Key ID</label>
+              <input type="text" class="input-text" id="setAccessKey" required />
+            </div>
+            <div class="form-group">
+              <label>Nuevo Secret Access Key</label>
+              <input type="password" class="input-text" id="setSecretKey" required />
+            </div>
+            <div class="form-group">
+              <label>Región S3 Reportada</label>
+              <input type="text" class="input-text" id="setRegion" value="us-east-1" />
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Guardar Credenciales</button>
+            </div>
+          </form>
+
+          <div class="security-info-box">
+            <h4>Detalles de Criptografía</h4>
+            <p>Los datos en tránsito se reciben vía HTTP S3 y antes de enviarse a Hugging Face se procesan en bloques con <strong>AES-256-GCM</strong> (clave derivada SHA-256, Nonce único aleatorio de 12 bytes por chunk). Hugging Face únicamente almacena archivos binarios cifrados opacos.</p>
+          </div>
+        </div>
+
+        <!-- Database Backup & Migration Card -->
+        <div class="glass-card settings-box" style="margin-top: 1.5rem;">
+          <div class="card-header-row">
+            <div>
+              <h3>Respaldo y Migración de Base de Datos</h3>
+              <p>Descarga la base de datos completa para montarla en otra instancia o en Coolify sin perder datos.</p>
+            </div>
+            <button type="button" class="btn btn-primary" id="btnDownloadBackup">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              <span>Descargar Base de Datos (.db)</span>
+            </button>
+          </div>
+          <div class="backup-info-note">
+            <p>El archivo descargado (<code>.db</code>) contiene todas las cuentas configuradas, buckets, objetos y la tabla de chunks cifrados. Si vas a alojar en <strong>Coolify</strong>, puedes montar este archivo directamente en el volumen persistente <code>/data/hf2s3_metadata.db</code> y el nuevo servidor reconocerá todo al instante.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- MODAL: ADD ACCOUNT -->
+  <div class="modal-overlay hidden" id="modalAddAccount">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Conectar Cuenta Hugging Face</h3>
+        <button class="modal-close" data-close="modalAddAccount">&times;</button>
+      </div>
+      <form id="formAddAccount">
+        <div class="form-group">
+          <label>Token de Acceso de Hugging Face (Write permission) <span class="required">*</span></label>
+          <input type="password" class="input-text" id="hfTokenInput" placeholder="hf_..." required />
+          <span class="field-hint">Genera un token con permisos de <strong>Write</strong> en <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">huggingface.co/settings/tokens</a>.</span>
+        </div>
+        <div class="form-group">
+          <label>Nombre Identificador de Cuenta (Opcional)</label>
+          <input type="text" class="input-text" id="hfAccountNameInput" placeholder="Ej. HF Cuenta Personal" />
+        </div>
+        <div class="form-group">
+          <label>Nombre del Repositorio Dataset Privado</label>
+          <input type="text" class="input-text" id="hfRepoNameInput" value="hf2s3-vault" placeholder="hf2s3-vault" />
+          <span class="field-hint">Si el dataset no existe, HF2S3 lo creará automáticamente en modo <strong>privado</strong>.</span>
+        </div>
+        <div class="form-group">
+          <label>Cuota Asignada (GB)</label>
+          <input type="number" class="input-text" id="hfQuotaInput" value="100" min="1" max="1000" />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="modalAddAccount">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitAccount">
+            <span class="btn-text">Verificar y Conectar</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: CREATE BUCKET -->
+  <div class="modal-overlay hidden" id="modalCreateBucket">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Crear Nuevo Bucket S3</h3>
+        <button class="modal-close" data-close="modalCreateBucket">&times;</button>
+      </div>
+      <form id="formCreateBucket">
+        <div class="form-group">
+          <label>Nombre del Bucket (letras minúsculas, números y guiones)</label>
+          <input type="text" class="input-text" id="bucketNameInput" placeholder="ej. backups-empresa" pattern="^[a-z0-9.-]+$" required />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="modalCreateBucket">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Crear Bucket</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: INSPECT CHUNKS -->
+  <div class="modal-overlay hidden" id="modalInspectChunks">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3>Distribución de Chunks en Hugging Face</h3>
+        <button class="modal-close" data-close="modalInspectChunks">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="chunk-inspect-summary" id="chunkInspectSummary"></div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Chunk</th>
+                <th>Rango Bytes</th>
+                <th>Tamaño Plano</th>
+                <th>Cifrado AES</th>
+                <th>Cuenta Hugging Face</th>
+                <th>Ruta en Repo</th>
+              </tr>
+            </thead>
+            <tbody id="chunksTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" data-close="modalInspectChunks">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- MODAL / OVERLAY: ADMIN LOGIN -->
+  <div class="login-overlay hidden" id="loginOverlay">
+    <div class="login-card glass-card">
+      <div class="login-brand">
+        <div class="logo-mark">
+          <svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <h2>HF2S3 Gateway</h2>
+        <p>Inicia sesión con tu cuenta de administrador</p>
+      </div>
+      <form id="formLogin">
+        <div class="form-group">
+          <label>Usuario Administrador</label>
+          <input type="text" class="input-text" id="loginUser" placeholder="admin" required autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label>Contraseña</label>
+          <input type="password" class="input-text" id="loginPass" placeholder="••••••••" required autocomplete="current-password" />
+        </div>
+        <div class="login-error hidden" id="loginError"></div>
+        <button type="submit" class="btn btn-primary btn-block" id="btnLoginSubmit">
+          <span>Acceder al Panel</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  hf2s3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hf2s3:latest
+    container_name: hf2s3-gateway
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - PORT=8080
+      - HF2S3_DB=/data/hf2s3_metadata.db
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - HF2S3_ACCESS_KEY=${HF2S3_ACCESS_KEY:-hf2s3-access-key}
+      - HF2S3_SECRET_KEY=${HF2S3_SECRET_KEY:-hf2s3-secret-key}
+      - HF2S3_MASTER_KEY=${HF2S3_MASTER_KEY:-hf2s3-aes-master-passphrase-2026}
+      - HF2S3_CHUNK_SIZE_MB=${HF2S3_CHUNK_SIZE_MB:-32}
+      - HF2S3_REGION=${HF2S3_REGION:-us-east-1}
+    volumes:
+      - hf2s3_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  hf2s3_data:
+    name: hf2s3_data

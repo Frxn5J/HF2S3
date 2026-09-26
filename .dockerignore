@@ -1,0 +1,12 @@
+.git
+*.exe
+*.db
+*.db-wal
+*.db-shm
+*.tmp
+.DS_Store
+.idea
+.vscode
+cmd/benchmark/benchmark.exe
+hf2s3.exe
+benchmark.exe
