@@ -356,3 +356,135 @@ func TestConcurrentMultipartUploads(t *testing.T) {
 	}
 }
 
+func TestRateLimitFailoverBetweenAccounts(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to open test db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	_ = database.CreateBucket(ctx, "test-bucket")
+
+	acc1 := &models.Account{
+		Name:       "HF Account 1",
+		Username:   "user1",
+		Token:      "hf_token1",
+		RepoName:   "user1/repo1",
+		QuotaBytes: 10 * 1024 * 1024,
+		IsActive:   true,
+	}
+	acc2 := &models.Account{
+		Name:       "HF Account 2",
+		Username:   "user2",
+		Token:      "hf_token2",
+		RepoName:   "user2/repo2",
+		QuotaBytes: 10 * 1024 * 1024,
+		IsActive:   true,
+	}
+	_ = database.CreateAccount(ctx, acc1)
+	_ = database.CreateAccount(ctx, acc2)
+
+	var mu sync.Mutex
+	fakeHFStore := make(map[string][]byte)
+
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		auth := r.Header.Get("Authorization")
+
+		// If request is from account 1, simulate Hugging Face Hub Rate Limit (429)
+		if strings.Contains(auth, "hf_token1") && strings.Contains(r.URL.Path, "/commit/main") {
+			w.Header().Set("RateLimit", `"api";r=0;t=120`)
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error": "Rate limit exceeded for tier Free user: 1000 requests per 5 minutes"}`))
+			return
+		}
+
+		switch {
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/info/lfs/objects/batch"):
+			var batchReq hfclient.LfsBatchRequest
+			_ = json.NewDecoder(r.Body).Decode(&batchReq)
+			resp := hfclient.LfsBatchResponse{
+				Transfer: "basic",
+				Objects: []hfclient.LfsObjectResp{
+					{
+						Oid:  batchReq.Objects[0].Oid,
+						Size: batchReq.Objects[0].Size,
+						Actions: map[string]hfclient.LfsAction{
+							"upload": {
+								Href: ts.URL + "/lfs-upload/" + batchReq.Objects[0].Oid,
+							},
+						},
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/vnd.git-lfs+json")
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/lfs-upload/"):
+			oid := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			data, _ := io.ReadAll(r.Body)
+			fakeHFStore[oid] = data
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/commit/main"):
+			var payload struct {
+				LfsFiles []hfclient.CommitLfsFile `json:"lfsFiles"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			for _, f := range payload.LfsFiles {
+				fakeHFStore[f.Path] = fakeHFStore[f.Oid]
+			}
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer ts.Close()
+
+	client := hfclient.NewClient(hfclient.WithBaseURL(ts.URL))
+	masterKey := crypto.DeriveKey("test-master-key")
+	pool := NewPoolManager(database, client, masterKey, 1024*1024)
+
+	// Verify initially neither token is throttled
+	throttled1, _ := client.IsThrottled("hf_token1")
+	if throttled1 {
+		t.Fatal("Account 1 should not be throttled initially")
+	}
+
+	payload := []byte("Testing rate limit auto failover across accounts")
+	obj, err := pool.PutObject(ctx, "test-bucket", "failover-test.txt", "text/plain", bytes.NewReader(payload), int64(len(payload)), nil)
+	if err != nil {
+		t.Fatalf("PutObject failed despite having healthy alternate account: %v", err)
+	}
+
+	if obj == nil || obj.Size != int64(len(payload)) {
+		t.Fatalf("Unexpected object after failover: %+v", obj)
+	}
+
+	// Verify Account 1 is now recorded in cooldown
+	isThrottled, cooldown := client.IsThrottled("hf_token1")
+	if !isThrottled || cooldown <= 0 {
+		t.Errorf("Account 1 should be marked in cooldown after receiving 429, got throttled=%v, cooldown=%v", isThrottled, cooldown)
+	}
+
+	// Verify Account 2 took the upload
+	_, chunks, err := database.GetObjectWithChunks(ctx, "test-bucket", "failover-test.txt")
+	if err != nil {
+		t.Fatalf("GetObjectWithChunks failed: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("Expected chunks to be saved")
+	}
+	for _, chunk := range chunks {
+		if chunk.AccountID != acc2.ID {
+			t.Errorf("Expected chunk to be stored on Account 2 (%d), but got account %d", acc2.ID, chunk.AccountID)
+		}
+	}
+}
+

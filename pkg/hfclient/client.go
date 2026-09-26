@@ -19,8 +19,9 @@ import (
 type ClientOption func(*Client)
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL     string
+	httpClient  *http.Client
+	rateLimiter *TokenRateLimiter
 }
 
 func defaultTransport() *http.Transport {
@@ -53,6 +54,12 @@ func WithHTTPClient(httpClient *http.Client) ClientOption {
 	}
 }
 
+func WithRateLimiter(rateLimiter *TokenRateLimiter) ClientOption {
+	return func(c *Client) {
+		c.rateLimiter = rateLimiter
+	}
+}
+
 func NewClient(opts ...ClientOption) *Client {
 	c := &Client{
 		baseURL: "https://huggingface.co",
@@ -60,11 +67,36 @@ func NewClient(opts ...ClientOption) *Client {
 			Transport: defaultTransport(),
 			Timeout:   10 * time.Minute, // Large chunk uploads may require time
 		},
+		rateLimiter: NewTokenRateLimiter(),
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+func (c *Client) RateLimiter() *TokenRateLimiter {
+	return c.rateLimiter
+}
+
+func (c *Client) IsThrottled(token string) (bool, time.Duration) {
+	if c.rateLimiter == nil {
+		return false, 0
+	}
+	return c.rateLimiter.IsThrottled(token)
+}
+
+func (c *Client) SetCooldown(token string, d time.Duration) {
+	if c.rateLimiter != nil {
+		c.rateLimiter.SetCooldown(token, d)
+	}
+}
+
+func (c *Client) GetRateLimitStats(token string) RateLimitStats {
+	if c.rateLimiter == nil {
+		return RateLimitStats{APIRemaining: 1000, ResolversRemaining: 5000}
+	}
+	return c.rateLimiter.GetStats(token)
 }
 
 // doRequestWithRetry executes an HTTP request with exponential backoff and jitter for transient errors (429, 502, 503, 504).
@@ -87,6 +119,16 @@ func (c *Client) doRequestWithRetry(ctx context.Context, makeReq func() (*http.R
 			return nil, err
 		}
 
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", UserAgent)
+		}
+
+		// Extract Bearer token if present to track rate limits per account
+		token := ""
+		if auth := req.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
@@ -96,8 +138,50 @@ func (c *Client) doRequestWithRetry(ctx context.Context, makeReq func() (*http.R
 			continue
 		}
 
-		if resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode == http.StatusBadGateway ||
+		// Record telemetry and rate limit headers for this account
+		info := c.rateLimiter.RecordResponse(token, resp)
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			_ = resp.Body.Close()
+			var resetIn time.Duration = 15 * time.Second
+			var resetAt time.Time = time.Now().Add(resetIn)
+			bucket := BucketAPI
+			remaining := 0
+			if info != nil {
+				if info.ResetIn > 0 {
+					resetIn = info.ResetIn
+				}
+				if !info.ResetAt.IsZero() {
+					resetAt = info.ResetAt
+				}
+				if info.Bucket != "" {
+					bucket = info.Bucket
+				}
+				remaining = info.Remaining
+			}
+
+			// If reset is very short (<= 2 seconds) and retries remain, back off briefly
+			if resetIn <= 2*time.Second && attempt < maxRetries {
+				select {
+				case <-time.After(resetIn):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+
+			// Return RateLimitError so pool can immediately failover to another healthy account
+			return nil, &RateLimitError{
+				StatusCode: http.StatusTooManyRequests,
+				Bucket:     bucket,
+				Remaining:  remaining,
+				RetryAfter: resetIn,
+				ResetAt:    resetAt,
+				Message:    fmt.Sprintf("rate limit tier reached for Hugging Face (%s)", bucket),
+			}
+		}
+
+		if resp.StatusCode == http.StatusBadGateway ||
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusGatewayTimeout {
 			_ = resp.Body.Close()
@@ -365,6 +449,11 @@ func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath stri
 		return fmt.Errorf("marshal commit payload: %w", err)
 	}
 
+	// Pace repository commits to avoid triggering Hugging Face burst rate limits
+	if err := c.rateLimiter.WaitCommit(ctx, token); err != nil {
+		return fmt.Errorf("commit pacer: %w", err)
+	}
+
 	commitURL := fmt.Sprintf("%s/api/datasets/%s/commit/main", c.baseURL, repoID)
 	cResp, err := c.doRequestWithRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, commitURL, bytes.NewReader(commitBytes))
@@ -429,6 +518,11 @@ func (c *Client) DeleteChunks(ctx context.Context, token, repoID string, remoteP
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err
+	}
+
+	// Pace repository commits to avoid triggering Hugging Face burst rate limits
+	if err := c.rateLimiter.WaitCommit(ctx, token); err != nil {
+		return fmt.Errorf("delete commit pacer: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/datasets/%s/commit/main", c.baseURL, repoID)

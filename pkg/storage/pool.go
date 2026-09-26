@@ -85,8 +85,13 @@ func (p *PoolManager) putBuffer(b []byte) {
 }
 
 // AcquireAccountForChunk selects the least loaded account taking into account both stored and in-flight bytes.
-// It increments in-flight counters and returns a release callback that MUST be called when the upload finishes.
+// It prioritizes accounts that are not throttled or near rate-limit exhaustion.
 func (p *PoolManager) AcquireAccountForChunk(ctx context.Context, neededBytes int64) (*models.Account, func(), error) {
+	return p.AcquireAccountExcluding(ctx, neededBytes, 0)
+}
+
+// AcquireAccountExcluding selects the best account while optionally excluding a specific account ID (used for rate-limit failover).
+func (p *PoolManager) AcquireAccountExcluding(ctx context.Context, neededBytes int64, excludeAccountID int64) (*models.Account, func(), error) {
 	p.inFlightMu.Lock()
 	defer p.inFlightMu.Unlock()
 
@@ -102,20 +107,43 @@ func (p *PoolManager) AcquireAccountForChunk(ctx context.Context, neededBytes in
 	var minEffectiveRatio float64 = 1.0
 	var minInFlightCount int = -1
 
+	var bestThrottledAccount *models.Account
+	var minThrottledRatio float64 = 1.0
+	var minThrottledInFlight int = -1
+
 	for i := range accounts {
 		acc := &accounts[i]
+		if excludeAccountID > 0 && acc.ID == excludeAccountID {
+			continue
+		}
+
 		currentInFlight := p.inFlightBytes[acc.ID]
 		inFlightCount := p.inFlightCounts[acc.ID]
 
 		effectiveUsage := acc.UsedBytes + currentInFlight
 		if effectiveUsage+neededBytes <= acc.QuotaBytes {
 			effectiveRatio := float64(effectiveUsage) / float64(acc.QuotaBytes)
-			if bestAccount == nil || effectiveRatio < minEffectiveRatio || (effectiveRatio == minEffectiveRatio && inFlightCount < minInFlightCount) {
-				bestAccount = acc
-				minEffectiveRatio = effectiveRatio
-				minInFlightCount = inFlightCount
+			isThrottled, _ := p.hfClient.IsThrottled(acc.Token)
+
+			if !isThrottled {
+				if bestAccount == nil || effectiveRatio < minEffectiveRatio || (effectiveRatio == minEffectiveRatio && inFlightCount < minInFlightCount) {
+					bestAccount = acc
+					minEffectiveRatio = effectiveRatio
+					minInFlightCount = inFlightCount
+				}
+			} else {
+				if bestThrottledAccount == nil || effectiveRatio < minThrottledRatio || (effectiveRatio == minThrottledRatio && inFlightCount < minThrottledInFlight) {
+					bestThrottledAccount = acc
+					minThrottledRatio = effectiveRatio
+					minThrottledInFlight = inFlightCount
+				}
 			}
 		}
+	}
+
+	// If all available accounts are currently throttled, fallback to the least loaded throttled account
+	if bestAccount == nil {
+		bestAccount = bestThrottledAccount
 	}
 
 	if bestAccount == nil {
@@ -218,9 +246,30 @@ func (p *PoolManager) PutObject(ctx context.Context, bucket, key, contentType st
 			go func(idx int, off, plainSize int64, cipher []byte, hashHex string, account *models.Account, rPath string, rel func()) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				defer rel()
+				defer func() {
+					if rel != nil {
+						rel()
+					}
+				}()
 
-				if uploadErr := p.hfClient.UploadChunk(uploadCtx, account.Token, account.RepoName, rPath, cipher); uploadErr != nil {
+				uploadErr := p.hfClient.UploadChunk(uploadCtx, account.Token, account.RepoName, rPath, cipher)
+				if uploadErr != nil {
+					var rle *hfclient.RateLimitError
+					if errors.As(uploadErr, &rle) {
+						// Mark account throttled and attempt pool account failover
+						p.hfClient.SetCooldown(account.Token, rle.RetryAfter)
+						altAcc, altRel, altErr := p.AcquireAccountExcluding(uploadCtx, int64(len(cipher)), account.ID)
+						if altErr == nil {
+							rel()
+							rel = altRel
+							account = altAcc
+							rPath = fmt.Sprintf("data/%s.enc", uuid.New().String())
+							uploadErr = p.hfClient.UploadChunk(uploadCtx, account.Token, account.RepoName, rPath, cipher)
+						}
+					}
+				}
+
+				if uploadErr != nil {
 					select {
 					case errCh <- fmt.Errorf("upload chunk %d to %s: %w", idx, account.Name, uploadErr):
 						cancelUpload()
@@ -601,6 +650,20 @@ func (p *PoolManager) UploadPart(ctx context.Context, uploadID string, partNumbe
 			remotePath := fmt.Sprintf("data/%s.enc", chunkUUID)
 
 			uploadErr := p.hfClient.UploadChunk(ctx, acc.Token, acc.RepoName, remotePath, ciphertext)
+			if uploadErr != nil {
+				var rle *hfclient.RateLimitError
+				if errors.As(uploadErr, &rle) {
+					p.hfClient.SetCooldown(acc.Token, rle.RetryAfter)
+					altAcc, altRel, altErr := p.AcquireAccountExcluding(ctx, int64(len(ciphertext)), acc.ID)
+					if altErr == nil {
+						release()
+						acc = altAcc
+						release = altRel
+						remotePath = fmt.Sprintf("data/%s.enc", uuid.New().String())
+						uploadErr = p.hfClient.UploadChunk(ctx, acc.Token, acc.RepoName, remotePath, ciphertext)
+					}
+				}
+			}
 			release()
 			if uploadErr != nil {
 				return "", fmt.Errorf("upload part chunk: %w", uploadErr)

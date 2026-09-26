@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"hf2s3/pkg/hfclient"
 	"hf2s3/pkg/models"
 	"hf2s3/pkg/storage"
 )
@@ -220,19 +221,30 @@ func (h *DashboardHandler) handleGetStats(w http.ResponseWriter, r *http.Request
 
 // --- Accounts ---
 
+type AccountResponse struct {
+	models.Account
+	RateLimit hfclient.RateLimitStats `json:"rate_limit"`
+}
+
 func (h *DashboardHandler) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := h.pool.DB().ListAccounts(r.Context())
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Mask tokens in API response for safety
-	for i := range accounts {
-		if len(accounts[i].Token) > 8 {
-			accounts[i].Token = accounts[i].Token[:4] + "..." + accounts[i].Token[len(accounts[i].Token)-4:]
+
+	result := make([]AccountResponse, len(accounts))
+	for i, acc := range accounts {
+		stats := h.pool.HFClient().GetRateLimitStats(acc.Token)
+		if len(acc.Token) > 8 {
+			acc.Token = acc.Token[:4] + "..." + acc.Token[len(acc.Token)-4:]
+		}
+		result[i] = AccountResponse{
+			Account:   acc,
+			RateLimit: stats,
 		}
 	}
-	h.writeJSON(w, http.StatusOK, accounts)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 type CreateAccountRequest struct {
