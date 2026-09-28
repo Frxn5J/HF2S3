@@ -3,10 +3,10 @@
 **HF2S3** es una pasarela de almacenamiento inteligente de alto rendimiento desarrollada en **Go** que unifica cuentas y repositorios de **Hugging Face** en una arquitectura de almacenamiento multi-nivel, compatible con la API **AWS S3 / Cloudflare R2** y con una API REST multimedia dedicada.
 
 El sistema implementa dos niveles de almacenamiento complementarios:
-1. **Tier 1 (Caché S3 de Alta Velocidad)**: Buckets privados de Hugging Face (`s3.hf.co`) que almacenan medios sin cifrar y entregan directamente los bytes al cliente mediante **URLs prefirmadas AWS SigV4 (HTTP 302 / 307 Redirect)**. El VPS **nunca consume ancho de banda de descarga** y las credenciales de HF permanecen estrictamente ocultas.
+1. **Tier 1 (Pool de Caché S3 Multi-Cuenta de Alta Velocidad)**: Permite registrar múltiples buckets de Hugging Face Storage (`s3.hf.co`). Si dispones de $N$ cuentas con 100 GB cada una, obtienes **$N \times 100\text{ GB}$ de capacidad agregada de caché S3 privada**. Los medios frecuentes se almacenan sin cifrar y se entregan directamente al cliente mediante **URLs prefirmadas AWS SigV4 (HTTP 302 / 307 Redirect)** específicas del bucket y cuenta que alberga cada archivo. El VPS **nunca consume ancho de banda de descarga** y las credenciales permanecen estrictamente seguras.
 2. **Tier 2 (Frío / Almacenamiento Masivo en Datasets)**: Datasets públicos en Hugging Face Hub que albergan copias maestras originales protegidas con **cifrado en reposo AES-256-GCM (Zero-Knowledge)**. Las descargas son libres, gratuitas y de alta velocidad sin cuotas de autenticación.
 
-Al conectar $N$ cuentas gratuitas de Hugging Face, HF2S3 conforma un pool distribuido masivo de **$N \times 100\text{ GB}$**, permitiendo montar unidades de red o interactuar con clientes estándar como **Rclone, Cyberduck, AWS CLI, DuckDB, Boto3** o navegadores web y reproductores de video.
+Al conectar múltiples cuentas de Hugging Face (tanto para Datasets fríos como para Buckets S3 de caché), HF2S3 balancea la carga inteligentemente entre ellas y permite gestionar todo en vivo desde el panel web sin reiniciar el servicio.
 
 ---
 

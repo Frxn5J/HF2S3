@@ -319,3 +319,109 @@ func TestMultiTierObjectLocations(t *testing.T) {
 	}
 }
 
+func TestCacheBucketsCRUD(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Create Cache Bucket
+	cb1 := &models.CacheBucket{
+		Name:       "Cache Account 1",
+		Endpoint:   "https://s3.hf.co",
+		Region:     "us-east-1",
+		AccessKey:  "HFAK12345",
+		SecretKey:  "secret12345",
+		BucketName: "user1/cache-1",
+		QuotaBytes: 100 * 1024 * 1024 * 1024,
+		UsedBytes:  0,
+		IsActive:   true,
+	}
+
+	if err := db.CreateCacheBucket(ctx, cb1); err != nil {
+		t.Fatalf("CreateCacheBucket failed: %v", err)
+	}
+	if cb1.ID == 0 {
+		t.Fatalf("Expected non-zero ID for cb1")
+	}
+
+	cb2 := &models.CacheBucket{
+		Name:       "Cache Account 2",
+		Endpoint:   "https://s3.hf.co",
+		Region:     "us-east-1",
+		AccessKey:  "HFAK67890",
+		SecretKey:  "secret67890",
+		BucketName: "user2/cache-2",
+		QuotaBytes: 100 * 1024 * 1024 * 1024,
+		UsedBytes:  50 * 1024 * 1024 * 1024,
+		IsActive:   true,
+	}
+	if err := db.CreateCacheBucket(ctx, cb2); err != nil {
+		t.Fatalf("CreateCacheBucket cb2 failed: %v", err)
+	}
+
+	// 2. List Active Cache Buckets (ordered by lowest usage ratio)
+	activeList, err := db.ListActiveCacheBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveCacheBuckets failed: %v", err)
+	}
+	if len(activeList) != 2 {
+		t.Fatalf("Expected 2 active cache buckets, got %d", len(activeList))
+	}
+	if activeList[0].ID != cb1.ID {
+		t.Errorf("Expected cb1 first due to lower usage ratio, got %d", activeList[0].ID)
+	}
+
+	// 3. Increment Usage
+	if err := db.IncrementCacheBucketUsage(ctx, cb1.ID, 1024); err != nil {
+		t.Fatalf("IncrementCacheBucketUsage failed: %v", err)
+	}
+	fetchedCb1, err := db.GetCacheBucketByID(ctx, cb1.ID)
+	if err != nil {
+		t.Fatalf("GetCacheBucketByID failed: %v", err)
+	}
+	if fetchedCb1.UsedBytes != 1024 {
+		t.Errorf("Expected 1024 used bytes, got %d", fetchedCb1.UsedBytes)
+	}
+
+	// 4. Toggle Bucket
+	if err := db.ToggleCacheBucket(ctx, cb1.ID); err != nil {
+		t.Fatalf("ToggleCacheBucket failed: %v", err)
+	}
+	activeAfterToggle, err := db.ListActiveCacheBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveCacheBuckets failed: %v", err)
+	}
+	if len(activeAfterToggle) != 1 || activeAfterToggle[0].ID != cb2.ID {
+		t.Errorf("Expected only cb2 active after toggling cb1, got %v", activeAfterToggle)
+	}
+
+	// 5. Overall Stats aggregation
+	stats, err := db.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if stats.TotalCacheBuckets != 2 || stats.ActiveCacheBuckets != 1 {
+		t.Errorf("Cache bucket stats mismatch: total=%d, active=%d", stats.TotalCacheBuckets, stats.ActiveCacheBuckets)
+	}
+	expectedCapacity := 200 * int64(1024*1024*1024)
+	if stats.TotalCacheCapacityBytes != expectedCapacity {
+		t.Errorf("TotalCacheCapacityBytes mismatch: got %d, want %d", stats.TotalCacheCapacityBytes, expectedCapacity)
+	}
+
+	// 6. Delete Bucket
+	if err := db.DeleteCacheBucket(ctx, cb1.ID); err != nil {
+		t.Fatalf("DeleteCacheBucket failed: %v", err)
+	}
+	allList, err := db.ListCacheBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListCacheBuckets failed: %v", err)
+	}
+	if len(allList) != 1 || allList[0].ID != cb2.ID {
+		t.Errorf("Expected 1 bucket remaining after delete, got %d", len(allList))
+	}
+}
+
+

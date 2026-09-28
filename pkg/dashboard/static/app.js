@@ -70,6 +70,23 @@ document.addEventListener('DOMContentLoaded', () => {
   const formAddAccount = document.getElementById('formAddAccount');
   const btnSubmitAccount = document.getElementById('btnSubmitAccount');
 
+  // Cache Buckets Elements (Tier 1 S3 Cache)
+  const cacheBucketsTableBody = document.getElementById('cacheBucketsTableBody');
+  const btnOpenAddCacheBucketModal = document.getElementById('btnOpenAddCacheBucketModal');
+  const modalAddCacheBucket = document.getElementById('modalAddCacheBucket');
+  const formAddCacheBucket = document.getElementById('formAddCacheBucket');
+  const btnSubmitCacheBucket = document.getElementById('btnSubmitCacheBucket');
+
+  // Overview Cache Elements
+  const metricCacheTotalCapacity = document.getElementById('metricCacheTotalCapacity');
+  const metricCacheStoragePercent = document.getElementById('metricCacheStoragePercent');
+  const cacheProgressBar = document.getElementById('cacheProgressBar');
+  const metricCacheUsedStorage = document.getElementById('metricCacheUsedStorage');
+  const metricCacheFreeStorage = document.getElementById('metricCacheFreeStorage');
+  const metricCachedObjectsCount = document.getElementById('metricCachedObjectsCount');
+  const metricCacheBucketsCount = document.getElementById('metricCacheBucketsCount');
+  const metricCacheBucketsActive = document.getElementById('metricCacheBucketsActive');
+
   // Storage Tab
   const bucketsListContainer = document.getElementById('bucketsListContainer');
   const btnCreateBucketModal = document.getElementById('btnCreateBucketModal');
@@ -200,7 +217,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Keyboard accessibility: Close modals with Escape (R-32)
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      [modalAddAccount, modalCreateBucket, modalInspectChunks].forEach(m => {
+      [modalAddAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(m => {
         if (m && !m.classList.contains('hidden')) {
           m.classList.add('hidden');
         }
@@ -209,7 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Close modals on backdrop click
-  [modalAddAccount, modalCreateBucket, modalInspectChunks].forEach(modal => {
+  [modalAddAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(modal => {
     if (modal) {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -222,6 +239,12 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnOpenAddAccountModal) {
     btnOpenAddAccountModal.addEventListener('click', () => {
       modalAddAccount.classList.remove('hidden');
+    });
+  }
+
+  if (btnOpenAddCacheBucketModal) {
+    btnOpenAddCacheBucketModal.addEventListener('click', () => {
+      if (modalAddCacheBucket) modalAddCacheBucket.classList.remove('hidden');
     });
   }
 
@@ -266,7 +289,25 @@ document.addEventListener('DOMContentLoaded', () => {
       metricActiveAccounts.textContent = `${data.active_accounts} / ${data.total_accounts}`;
       metricBucketsCount.textContent = data.total_buckets;
       metricObjectsCount.textContent = data.total_objects;
-      navAccountsCount.textContent = data.total_accounts;
+      navAccountsCount.textContent = (data.total_accounts || 0) + (data.total_cache_buckets || 0);
+
+      // Cache Stats (Tier 1 S3 Cache Pool)
+      const cacheCapGB = ((data.total_cache_capacity_bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
+      if (metricCacheTotalCapacity) metricCacheTotalCapacity.textContent = `${cacheCapGB} GB`;
+      if (metricCacheUsedStorage) metricCacheUsedStorage.textContent = formatBytes(data.total_cache_used_bytes || 0);
+      const cacheFree = (data.total_cache_capacity_bytes || 0) - (data.total_cache_used_bytes || 0);
+      if (metricCacheFreeStorage) metricCacheFreeStorage.textContent = formatBytes(cacheFree > 0 ? cacheFree : 0);
+
+      let cachePct = 0;
+      if (data.total_cache_capacity_bytes > 0) {
+        cachePct = (((data.total_cache_used_bytes || 0) / data.total_cache_capacity_bytes) * 100).toFixed(1);
+      }
+      if (metricCacheStoragePercent) metricCacheStoragePercent.textContent = `${cachePct}% usado`;
+      if (cacheProgressBar) cacheProgressBar.style.width = `${Math.max(cachePct, data.total_cache_capacity_bytes > 0 ? 2 : 0)}%`;
+
+      if (metricCacheBucketsCount) metricCacheBucketsCount.textContent = data.total_cache_buckets || 0;
+      if (metricCacheBucketsActive) metricCacheBucketsActive.textContent = `${data.active_cache_buckets || 0} / ${data.total_cache_buckets || 0}`;
+      if (metricCachedObjectsCount) metricCachedObjectsCount.textContent = data.cached_objects || 0;
     } catch (e) {
       console.error('Failed to load stats', e);
     }
@@ -419,6 +460,137 @@ document.addEventListener('DOMContentLoaded', () => {
       btnSubmitAccount.innerHTML = '<span class="btn-text">Verificar y Conectar</span>';
     }
   });
+
+  // --- CACHE BUCKETS (TIER 1 S3 CACHE) ---
+
+  async function loadCacheBuckets() {
+    if (!cacheBucketsTableBody) return;
+    try {
+      const res = await fetch('/api/cache-buckets');
+      if (!res.ok) return;
+      const buckets = await res.json();
+
+      cacheBucketsTableBody.innerHTML = '';
+      if (!buckets || buckets.length === 0) {
+        cacheBucketsTableBody.innerHTML = `
+          <tr>
+            <td colspan="7" class="empty-state">
+              No tienes ningún bucket S3 de caché configurado. Haz clic en <strong>+ Conectar Bucket S3 de Caché</strong> para habilitar descargas directas a velocidad máxima sin ancho de banda VPS.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      buckets.forEach(cb => {
+        const usedPct = cb.quota_bytes > 0 ? ((cb.used_bytes / cb.quota_bytes) * 100).toFixed(1) : 0;
+        const quotaGB = (cb.quota_bytes / (1024 * 1024 * 1024)).toFixed(0);
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td><strong>${cb.name}</strong></td>
+          <td><code>${cb.bucket_name}</code></td>
+          <td><span style="font-size:0.85rem;color:var(--text-muted);">${cb.endpoint} (${cb.region})</span></td>
+          <td>
+            <div class="progress-bar-wrap" style="width: 130px; margin-bottom: 4px;">
+              <div class="progress-bar" style="width: ${Math.max(usedPct, 2)}%; background: linear-gradient(90deg, #6366f1, #a855f7);"></div>
+            </div>
+            <span style="font-size: 0.75rem; color: var(--text-dim);">${formatBytes(cb.used_bytes)} (${usedPct}%)</span>
+          </td>
+          <td>${quotaGB} GB</td>
+          <td>
+            <span class="${cb.is_active ? 'badge-active' : 'badge-inactive'}">
+              ${cb.is_active ? 'Activo' : 'Pausado'}
+            </span>
+          </td>
+          <td>
+            <button class="btn btn-xs btn-outline btn-toggle-cb" data-id="${cb.id}">
+              ${cb.is_active ? 'Pausar' : 'Activar'}
+            </button>
+            <button class="btn btn-xs btn-danger btn-del-cb" data-id="${cb.id}" title="Eliminar este bucket de caché">
+              Eliminar
+            </button>
+          </td>
+        `;
+        cacheBucketsTableBody.appendChild(row);
+      });
+
+      // Handlers for Toggle & Delete
+      document.querySelectorAll('.btn-toggle-cb').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          await fetch(`/api/cache-buckets/${id}/toggle`, { method: 'POST' });
+          loadCacheBuckets();
+          loadStats();
+        });
+      });
+
+      document.querySelectorAll('.btn-del-cb').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('¿Seguro que deseas eliminar este bucket de caché S3? Los archivos cacheados aquí no se perderán (se conservan en el dataset masivo).')) return;
+          const id = btn.dataset.id;
+          await fetch(`/api/cache-buckets/${id}`, { method: 'DELETE' });
+          loadCacheBuckets();
+          loadStats();
+          showToast('Bucket de caché eliminado');
+        });
+      });
+    } catch (e) {
+      console.error('Failed to load cache buckets', e);
+    }
+  }
+
+  // Add Cache Bucket form submission
+  if (formAddCacheBucket) {
+    formAddCacheBucket.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('cacheBucketNameInput').value.trim();
+      const endpoint = document.getElementById('cacheBucketEndpointInput').value.trim();
+      const region = document.getElementById('cacheBucketRegionInput').value.trim();
+      const accessKey = document.getElementById('cacheBucketAccessKeyInput').value.trim();
+      const secretKey = document.getElementById('cacheBucketSecretKeyInput').value.trim();
+      const bucketName = document.getElementById('cacheBucketTargetInput').value.trim();
+      const quotaGB = parseInt(document.getElementById('cacheBucketQuotaInput').value, 10) || 100;
+
+      btnSubmitCacheBucket.disabled = true;
+      btnSubmitCacheBucket.innerHTML = '<span class="btn-text">Verificando en HF Storage...</span>';
+
+      try {
+        const res = await fetch('/api/cache-buckets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            endpoint,
+            region,
+            access_key: accessKey,
+            secret_key: secretKey,
+            bucket_name: bucketName,
+            quota_bytes: quotaGB * 1024 * 1024 * 1024
+          })
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || 'Error conectando bucket S3 de caché', 'error');
+          return;
+        }
+
+        showToast(`Bucket de caché ${name} conectado con éxito (${quotaGB} GB añadidos al pool)`);
+        formAddCacheBucket.reset();
+        document.getElementById('cacheBucketEndpointInput').value = 'https://s3.hf.co';
+        document.getElementById('cacheBucketRegionInput').value = 'us-east-1';
+        document.getElementById('cacheBucketQuotaInput').value = '100';
+        modalAddCacheBucket.classList.add('hidden');
+        loadCacheBuckets();
+        loadStats();
+      } catch (err) {
+        showToast('Error de conexión con el gateway', 'error');
+      } finally {
+        btnSubmitCacheBucket.disabled = false;
+        btnSubmitCacheBucket.innerHTML = '<span class="btn-text">Verificar y Conectar Bucket</span>';
+      }
+    });
+  }
 
   // --- BUCKETS & FILES ---
 
@@ -1071,6 +1243,7 @@ document.addEventListener('DOMContentLoaded', () => {
       loadAccounts();
     } else if (currentTab === 'accounts') {
       loadAccounts();
+      loadCacheBuckets();
     } else if (currentTab === 'storage') {
       loadBuckets();
     } else if (currentTab === 'connect' || currentTab === 'settings') {
@@ -1168,6 +1341,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function loadAllData() {
     loadStats();
     loadAccounts();
+    loadCacheBuckets();
     loadBuckets();
     loadSettings();
   }

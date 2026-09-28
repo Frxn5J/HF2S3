@@ -36,7 +36,8 @@ type ByteRange struct {
 type PoolManager struct {
 	db             *db.DB
 	hfClient       *hfclient.Client
-	cacheClient    *hfstorage.S3Client
+	cacheClientsMu sync.RWMutex
+	cacheClients   map[int64]*hfstorage.S3Client
 	masterKey      []byte
 	chunkSizeBytes int64
 
@@ -54,6 +55,7 @@ func NewPoolManager(database *db.DB, client *hfclient.Client, masterKey []byte, 
 	p := &PoolManager{
 		db:             database,
 		hfClient:       client,
+		cacheClients:   make(map[int64]*hfstorage.S3Client),
 		masterKey:      masterKey,
 		chunkSizeBytes: chunkSizeBytes,
 		inFlightBytes:  make(map[int64]int64),
@@ -365,7 +367,7 @@ func (p *PoolManager) PutObject(ctx context.Context, bucket, key, contentType st
 	}
 
 	// If cache client is configured, promote unencrypted copy to Tier 1 Cache
-	if p.cacheClient != nil && p.cacheClient.IsConfigured() {
+	if p.HasCacheConfigured(ctx) {
 		go func(b, k string) {
 			promoteCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
@@ -586,15 +588,18 @@ func (p *PoolManager) GetObject(ctx context.Context, bucket, key string, byteRan
 	}
 
 	// Fast path: if whole object is requested and Tier 1 Cache is available, stream unencrypted directly from HF Storage Bucket
-	if byteRange == nil && p.cacheClient != nil && p.cacheClient.IsConfigured() {
+	if byteRange == nil && p.HasCacheConfigured(ctx) {
 		cacheLoc, err := p.db.GetObjectLocationByTier(ctx, obj.ID, models.TierCache)
 		if err == nil && cacheLoc != nil {
-			cacheReader, _, _, err := p.cacheClient.GetObject(ctx, p.cacheClient.Bucket(), cacheLoc.RemotePath)
-			if err == nil && cacheReader != nil {
-				go func(locID int64) {
-					_ = p.db.RecordLocationAccess(context.Background(), locID)
-				}(cacheLoc.ID)
-				return obj, cacheReader, nil
+			client, _, err := p.GetCacheClient(ctx, cacheLoc.AccountID)
+			if err == nil && client != nil && client.IsConfigured() {
+				cacheReader, _, _, err := client.GetObject(ctx, client.Bucket(), cacheLoc.RemotePath)
+				if err == nil && cacheReader != nil {
+					go func(locID int64) {
+						_ = p.db.RecordLocationAccess(context.Background(), locID)
+					}(cacheLoc.ID)
+					return obj, cacheReader, nil
+				}
 			}
 		}
 	}
@@ -605,7 +610,7 @@ func (p *PoolManager) GetObject(ctx context.Context, bucket, key string, byteRan
 	}
 
 	// Trigger auto-promotion to Tier 1 Cache in background if configured
-	if p.cacheClient != nil && p.cacheClient.IsConfigured() {
+	if p.HasCacheConfigured(ctx) {
 		go func(b, k string) {
 			promoteCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
@@ -617,9 +622,7 @@ func (p *PoolManager) GetObject(ctx context.Context, bucket, key string, byteRan
 }
 
 func (p *PoolManager) DeleteObject(ctx context.Context, bucket, key string) error {
-	if p.cacheClient != nil && p.cacheClient.IsConfigured() {
-		_ = p.cacheClient.DeleteObject(ctx, p.cacheClient.Bucket(), fmt.Sprintf("%s/%s", bucket, key))
-	}
+	_ = p.EvictCache(ctx, bucket, key)
 
 	chunks, err := p.db.DeleteObject(ctx, bucket, key)
 	if err != nil {

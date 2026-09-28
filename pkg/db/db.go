@@ -170,10 +170,27 @@ func (d *DB) migrate() error {
 		UNIQUE(object_id, tier, remote_path)
 	);
 
+	CREATE TABLE IF NOT EXISTS cache_buckets (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL DEFAULT 0,
+		name TEXT NOT NULL,
+		endpoint TEXT NOT NULL DEFAULT 'https://s3.hf.co',
+		region TEXT NOT NULL DEFAULT 'us-east-1',
+		access_key TEXT NOT NULL,
+		secret_key TEXT NOT NULL,
+		bucket_name TEXT NOT NULL,
+		quota_bytes INTEGER NOT NULL DEFAULT 107374182400,
+		used_bytes INTEGER NOT NULL DEFAULT 0,
+		is_active INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_objects_bucket_key ON objects(bucket, key);
 	CREATE INDEX IF NOT EXISTS idx_chunks_object_id ON chunks(object_id);
 	CREATE INDEX IF NOT EXISTS idx_obj_loc_tier ON object_locations(object_id, tier);
 	CREATE INDEX IF NOT EXISTS idx_obj_loc_lru ON object_locations(tier, last_accessed_at);
+	CREATE INDEX IF NOT EXISTS idx_cache_buckets_active ON cache_buckets(is_active);
 	`
 	if _, err := d.db.Exec(schema); err != nil {
 		return err
@@ -324,6 +341,167 @@ func (d *DB) ListActiveAccounts(ctx context.Context) ([]models.Account, error) {
 		}
 		acc.IsActive = isActive == 1
 		result = append(result, acc)
+	}
+	return result, rows.Err()
+}
+
+// --- Cache Buckets (Tier 1 S3 Cache) Operations ---
+
+func (d *DB) CreateCacheBucket(ctx context.Context, cb *models.CacheBucket) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	cb.CreatedAt = now
+	cb.UpdatedAt = now
+	if cb.Endpoint == "" {
+		cb.Endpoint = "https://s3.hf.co"
+	}
+	if cb.Region == "" {
+		cb.Region = "us-east-1"
+	}
+	if cb.QuotaBytes <= 0 {
+		cb.QuotaBytes = 100 * 1024 * 1024 * 1024 // 100GB
+	}
+
+	res, err := d.db.ExecContext(ctx, `
+		INSERT INTO cache_buckets (account_id, name, endpoint, region, access_key, secret_key, bucket_name, quota_bytes, used_bytes, is_active, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, cb.AccountID, cb.Name, cb.Endpoint, cb.Region, cb.AccessKey, cb.SecretKey, cb.BucketName, cb.QuotaBytes, cb.UsedBytes, cb.IsActive, cb.CreatedAt, cb.UpdatedAt)
+	if err != nil {
+		return err
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	cb.ID = id
+	return nil
+}
+
+func (d *DB) UpdateCacheBucket(ctx context.Context, cb *models.CacheBucket) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	cb.UpdatedAt = time.Now().UTC()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE cache_buckets
+		SET name = ?, endpoint = ?, region = ?, access_key = ?, secret_key = ?, bucket_name = ?, quota_bytes = ?, is_active = ?, updated_at = ?
+		WHERE id = ?
+	`, cb.Name, cb.Endpoint, cb.Region, cb.AccessKey, cb.SecretKey, cb.BucketName, cb.QuotaBytes, cb.IsActive, cb.UpdatedAt, cb.ID)
+	return err
+}
+
+func (d *DB) UpdateCacheBucketUsage(ctx context.Context, id int64, usedBytes int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE cache_buckets
+		SET used_bytes = ?, updated_at = ?
+		WHERE id = ?
+	`, usedBytes, now, id)
+	return err
+}
+
+func (d *DB) IncrementCacheBucketUsage(ctx context.Context, id int64, deltaBytes int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE cache_buckets
+		SET used_bytes = CASE WHEN used_bytes + ? < 0 THEN 0 ELSE used_bytes + ? END, updated_at = ?
+		WHERE id = ?
+	`, deltaBytes, deltaBytes, now, id)
+	return err
+}
+
+func (d *DB) DeleteCacheBucket(ctx context.Context, id int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	_, err := d.db.ExecContext(ctx, `DELETE FROM cache_buckets WHERE id = ?`, id)
+	return err
+}
+
+func (d *DB) ToggleCacheBucket(ctx context.Context, id int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE cache_buckets
+		SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = ?
+		WHERE id = ?
+	`, now, id)
+	return err
+}
+
+func (d *DB) GetCacheBucketByID(ctx context.Context, id int64) (*models.CacheBucket, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, account_id, name, endpoint, region, access_key, secret_key, bucket_name, quota_bytes, used_bytes, is_active, created_at, updated_at
+		FROM cache_buckets WHERE id = ?
+	`, id)
+
+	var cb models.CacheBucket
+	var isActive int
+	err := row.Scan(&cb.ID, &cb.AccountID, &cb.Name, &cb.Endpoint, &cb.Region, &cb.AccessKey, &cb.SecretKey, &cb.BucketName, &cb.QuotaBytes, &cb.UsedBytes, &isActive, &cb.CreatedAt, &cb.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	cb.IsActive = isActive == 1
+	return &cb, nil
+}
+
+func (d *DB) ListCacheBuckets(ctx context.Context) ([]models.CacheBucket, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, account_id, name, endpoint, region, access_key, secret_key, bucket_name, quota_bytes, used_bytes, is_active, created_at, updated_at
+		FROM cache_buckets ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []models.CacheBucket
+	for rows.Next() {
+		var cb models.CacheBucket
+		var isActive int
+		if err := rows.Scan(&cb.ID, &cb.AccountID, &cb.Name, &cb.Endpoint, &cb.Region, &cb.AccessKey, &cb.SecretKey, &cb.BucketName, &cb.QuotaBytes, &cb.UsedBytes, &isActive, &cb.CreatedAt, &cb.UpdatedAt); err != nil {
+			return nil, err
+		}
+		cb.IsActive = isActive == 1
+		result = append(result, cb)
+	}
+	return result, rows.Err()
+}
+
+func (d *DB) ListActiveCacheBuckets(ctx context.Context) ([]models.CacheBucket, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, account_id, name, endpoint, region, access_key, secret_key, bucket_name, quota_bytes, used_bytes, is_active, created_at, updated_at
+		FROM cache_buckets WHERE is_active = 1
+		ORDER BY (used_bytes * 1.0 / NULLIF(quota_bytes, 0)) ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []models.CacheBucket
+	for rows.Next() {
+		var cb models.CacheBucket
+		var isActive int
+		if err := rows.Scan(&cb.ID, &cb.AccountID, &cb.Name, &cb.Endpoint, &cb.Region, &cb.AccessKey, &cb.SecretKey, &cb.BucketName, &cb.QuotaBytes, &cb.UsedBytes, &isActive, &cb.CreatedAt, &cb.UpdatedAt); err != nil {
+			return nil, err
+		}
+		cb.IsActive = isActive == 1
+		result = append(result, cb)
 	}
 	return result, rows.Err()
 }
@@ -949,6 +1127,17 @@ func (d *DB) GetStats(ctx context.Context) (*models.PoolStats, error) {
 	if stats.ColdObjects == 0 && stats.TotalObjects > 0 {
 		stats.ColdObjects = stats.TotalObjects
 	}
+
+	// Cache Buckets aggregation (Tier 1 S3 Cache)
+	rowCB := d.db.QueryRowContext(ctx, `
+		SELECT 
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(quota_bytes), 0),
+			COALESCE(SUM(used_bytes), 0)
+		FROM cache_buckets
+	`)
+	_ = rowCB.Scan(&stats.TotalCacheBuckets, &stats.ActiveCacheBuckets, &stats.TotalCacheCapacityBytes, &stats.TotalCacheUsedBytes)
 
 	return &stats, nil
 }

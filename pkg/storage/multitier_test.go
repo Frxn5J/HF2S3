@@ -228,3 +228,200 @@ func TestMultiTierLifecycle(t *testing.T) {
 		t.Errorf("Expected HasCold=true (golden copy intact)")
 	}
 }
+
+func TestMultiBucketCacheRouting(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open test DB: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// 1. Mock Two Separate S3 Cache Servers (representing 2 accounts with 100GB each)
+	cacheStorage1 := make(map[string][]byte)
+	s3Server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/bucket-account1/")
+		switch r.Method {
+		case http.MethodPut:
+			data, _ := io.ReadAll(r.Body)
+			cacheStorage1[key] = data
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			if data, ok := cacheStorage1[key]; ok {
+				_, _ = w.Write(data)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		case http.MethodDelete:
+			delete(cacheStorage1, key)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer s3Server1.Close()
+
+	cacheStorage2 := make(map[string][]byte)
+	s3Server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/bucket-account2/")
+		switch r.Method {
+		case http.MethodPut:
+			data, _ := io.ReadAll(r.Body)
+			cacheStorage2[key] = data
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			if data, ok := cacheStorage2[key]; ok {
+				_, _ = w.Write(data)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		case http.MethodDelete:
+			delete(cacheStorage2, key)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer s3Server2.Close()
+
+	// Register the two cache buckets in DB
+	cb1 := &models.CacheBucket{
+		Name:       "Cache Account 1",
+		Endpoint:   s3Server1.URL,
+		Region:     "us-east-1",
+		AccessKey:  "KEY1",
+		SecretKey:  "SEC1",
+		BucketName: "bucket-account1",
+		QuotaBytes: 100 * 1024 * 1024 * 1024,
+		UsedBytes:  0,
+		IsActive:   true,
+	}
+	if err := database.CreateCacheBucket(ctx, cb1); err != nil {
+		t.Fatalf("CreateCacheBucket 1: %v", err)
+	}
+
+	cb2 := &models.CacheBucket{
+		Name:       "Cache Account 2",
+		Endpoint:   s3Server2.URL,
+		Region:     "us-east-1",
+		AccessKey:  "KEY2",
+		SecretKey:  "SEC2",
+		BucketName: "bucket-account2",
+		QuotaBytes: 100 * 1024 * 1024 * 1024,
+		UsedBytes:  10 * 1024 * 1024 * 1024, // 10 GB already used -> cb1 should be picked first
+		IsActive:   true,
+	}
+	if err := database.CreateCacheBucket(ctx, cb2); err != nil {
+		t.Fatalf("CreateCacheBucket 2: %v", err)
+	}
+
+	// 2. Mock HF Datasets cold storage
+	hfStorage := make(map[string][]byte)
+	hfServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.Contains(path, "/resolve/main/") {
+			parts := strings.Split(path, "/resolve/main/")
+			if len(parts) == 2 {
+				remotePath := parts[1]
+				if data, ok := hfStorage[remotePath]; ok {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(data)
+					return
+				}
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer hfServer.Close()
+
+	masterPass := "test-multibucket-key-2026"
+	derivedKey := crypto.DeriveKey(masterPass)
+	hfCli := hfclient.NewClient(
+		hfclient.WithBaseURL(hfServer.URL),
+		hfclient.WithHTTPClient(hfServer.Client()),
+	)
+
+	pool := NewPoolManager(database, hfCli, derivedKey, 32*1024*1024)
+
+	bucketName := "assets"
+	if err := database.CreateBucket(ctx, bucketName); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+
+	testAcc := &models.Account{
+		Name:       "Media Node",
+		Username:   "hfmedia",
+		RepoName:   "hfmedia/vault",
+		QuotaBytes: 100 * 1024 * 1024 * 1024,
+		IsActive:   true,
+		IsPublic:   true,
+	}
+	_ = database.CreateAccount(ctx, testAcc)
+
+	// Prepare encrypted cold object
+	plainText := []byte("Multi-bucket cached media stream")
+	encryptedBlob, _ := crypto.Encrypt(plainText, derivedKey)
+	remoteCold := "data/doc.enc"
+	hfStorage[remoteCold] = encryptedBlob
+
+	obj := &models.Object{
+		Bucket:      bucketName,
+		Key:         "doc.pdf",
+		Size:        int64(len(plainText)),
+		ETag:        `"doc-etag"`,
+		ContentType: "application/pdf",
+	}
+	chunks := []models.Chunk{
+		{
+			PartNumber:      1,
+			ChunkIndex:      0,
+			OffsetBytes:     0,
+			SizeBytes:       int64(len(plainText)),
+			CipherSizeBytes: int64(len(encryptedBlob)),
+			AccountID:       testAcc.ID,
+			RemotePath:      remoteCold,
+			Sha256Hash:      "doc-sha256",
+			CreatedAt:       time.Now(),
+		},
+	}
+	_ = database.SaveObjectWithChunks(ctx, obj, chunks)
+
+	// Promote: should select cb1 (0% usage vs cb2 10% usage)
+	if err := pool.PromoteToCache(ctx, bucketName, "doc.pdf"); err != nil {
+		t.Fatalf("PromoteToCache: %v", err)
+	}
+
+	// Verify cb1 received the unencrypted file
+	if _, ok := cacheStorage1["assets/doc.pdf"]; !ok {
+		t.Errorf("Expected object in cacheStorage1 (least used bucket)")
+	}
+	if _, ok := cacheStorage2["assets/doc.pdf"]; ok {
+		t.Errorf("Object unexpectedly found in cacheStorage2")
+	}
+
+	// Verify presigned URL directs to bucket-account1
+	presignedURL, _, _, err := pool.GetObjectOrPresigned(ctx, bucketName, "doc.pdf")
+	if err != nil {
+		t.Fatalf("GetObjectOrPresigned: %v", err)
+	}
+	if !strings.Contains(presignedURL, "bucket-account1") {
+		t.Errorf("Expected presigned URL to target bucket-account1, got: %s", presignedURL)
+	}
+
+	// Verify cb1 used_bytes was incremented in DB
+	cb1After, _ := database.GetCacheBucketByID(ctx, cb1.ID)
+	if cb1After.UsedBytes != int64(len(plainText)) {
+		t.Errorf("Expected used_bytes %d for cb1, got %d", len(plainText), cb1After.UsedBytes)
+	}
+
+	// Evict doc.pdf
+	if err := pool.EvictCache(ctx, bucketName, "doc.pdf"); err != nil {
+		t.Fatalf("EvictCache: %v", err)
+	}
+
+	if _, ok := cacheStorage1["assets/doc.pdf"]; ok {
+		t.Errorf("Object still in cacheStorage1 after eviction")
+	}
+	cb1Evicted, _ := database.GetCacheBucketByID(ctx, cb1.ID)
+	if cb1Evicted.UsedBytes != 0 {
+		t.Errorf("Expected 0 used_bytes for cb1 after eviction, got %d", cb1Evicted.UsedBytes)
+	}
+}
+

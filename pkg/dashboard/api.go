@@ -71,6 +71,12 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts/{id}/sync", h.adminAuth.RequireAuth(h.handleSyncAccount))
 	mux.HandleFunc("DELETE /api/accounts/{id}", h.adminAuth.RequireAuth(h.handleDeleteAccount))
 
+	// Multi-Bucket S3 Cache endpoints
+	mux.HandleFunc("GET /api/cache-buckets", h.adminAuth.RequireAuth(h.handleListCacheBuckets))
+	mux.HandleFunc("POST /api/cache-buckets", h.adminAuth.RequireAuth(h.handleCreateCacheBucket))
+	mux.HandleFunc("POST /api/cache-buckets/{id}/toggle", h.adminAuth.RequireAuth(h.handleToggleCacheBucket))
+	mux.HandleFunc("DELETE /api/cache-buckets/{id}", h.adminAuth.RequireAuth(h.handleDeleteCacheBucket))
+
 	mux.HandleFunc("GET /api/buckets", h.adminAuth.RequireAuth(h.handleListBuckets))
 	mux.HandleFunc("POST /api/buckets", h.adminAuth.RequireAuth(h.handleCreateBucket))
 	mux.HandleFunc("DELETE /api/buckets/{name}", h.adminAuth.RequireAuth(h.handleDeleteBucket))
@@ -397,6 +403,122 @@ func (h *DashboardHandler) handleDeleteAccount(w http.ResponseWriter, r *http.Re
 	h.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
+// --- Cache Buckets (Tier 1 S3 Cache) Handlers ---
+
+func (h *DashboardHandler) handleListCacheBuckets(w http.ResponseWriter, r *http.Request) {
+	buckets, err := h.pool.DB().ListCacheBuckets(r.Context())
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type safeCacheBucket struct {
+		models.CacheBucket
+		SecretKeyMasked string `json:"secret_key_masked"`
+	}
+	result := make([]safeCacheBucket, len(buckets))
+	for i, b := range buckets {
+		masked := "********"
+		if len(b.SecretKey) > 4 {
+			masked = "••••" + b.SecretKey[len(b.SecretKey)-4:]
+		}
+		b.SecretKey = ""
+		result[i] = safeCacheBucket{
+			CacheBucket:     b,
+			SecretKeyMasked: masked,
+		}
+	}
+
+	h.writeJSON(w, http.StatusOK, result)
+}
+
+func (h *DashboardHandler) handleCreateCacheBucket(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name       string `json:"name"`
+		Endpoint   string `json:"endpoint"`
+		Region     string `json:"region"`
+		AccessKey  string `json:"access_key"`
+		SecretKey  string `json:"secret_key"`
+		BucketName string `json:"bucket_name"`
+		QuotaBytes int64  `json:"quota_bytes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+
+	if req.AccessKey == "" || req.SecretKey == "" || req.BucketName == "" {
+		h.writeError(w, http.StatusBadRequest, "Access Key, Secret Key y Bucket Name son requeridos")
+		return
+	}
+
+	if req.Name == "" {
+		req.Name = req.BucketName
+	}
+	if req.Endpoint == "" {
+		req.Endpoint = "https://s3.hf.co"
+	}
+	if req.Region == "" {
+		req.Region = "us-east-1"
+	}
+	if req.QuotaBytes <= 0 {
+		req.QuotaBytes = 100 * 1024 * 1024 * 1024
+	}
+
+	cb := &models.CacheBucket{
+		Name:       req.Name,
+		Endpoint:   req.Endpoint,
+		Region:     req.Region,
+		AccessKey:  req.AccessKey,
+		SecretKey:  req.SecretKey,
+		BucketName: req.BucketName,
+		QuotaBytes: req.QuotaBytes,
+		UsedBytes:  0,
+		IsActive:   true,
+	}
+
+	if err := h.pool.DB().CreateCacheBucket(r.Context(), cb); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "Error guardando bucket de caché: "+err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusCreated, cb)
+}
+
+func (h *DashboardHandler) handleToggleCacheBucket(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "ID de bucket inválido")
+		return
+	}
+
+	if err := h.pool.DB().ToggleCacheBucket(r.Context(), id); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.pool.InvalidateCacheClient(id)
+	h.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (h *DashboardHandler) handleDeleteCacheBucket(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "ID de bucket inválido")
+		return
+	}
+
+	if err := h.pool.DB().DeleteCacheBucket(r.Context(), id); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.pool.InvalidateCacheClient(id)
+	h.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
 // --- Buckets ---
 
 func (h *DashboardHandler) handleListBuckets(w http.ResponseWriter, r *http.Request) {
@@ -649,10 +771,13 @@ func (h *DashboardHandler) handleGetMediaInfo(w http.ResponseWriter, r *http.Req
 	}
 
 	var directURL string
-	if obj.HasCache && h.pool.CacheClient() != nil && h.pool.CacheClient().IsConfigured() {
+	if obj.HasCache {
 		loc, err := h.pool.DB().GetObjectLocationByTier(r.Context(), obj.ID, models.TierCache)
 		if err == nil && loc != nil {
-			directURL, _ = h.pool.CacheClient().PresignGetObject(h.pool.CacheClient().Bucket(), loc.RemotePath, 15*time.Minute)
+			client, _, err := h.pool.GetCacheClient(r.Context(), loc.AccountID)
+			if err == nil && client != nil && client.IsConfigured() {
+				directURL, _ = client.PresignGetObject(client.Bucket(), loc.RemotePath, 15*time.Minute)
+			}
 		}
 	}
 
@@ -720,7 +845,7 @@ s3.upload_file('local_file.pdf', 'my-bucket', 'remote_file.pdf')`, endpoint, h.s
 		"hf_storage_region":     h.settings.HFStorageRegion,
 		"hf_storage_access_key": h.settings.HFStorageAccessKey,
 		"hf_storage_bucket":     h.settings.HFStorageBucket,
-		"hf_storage_configured": h.pool.CacheClient() != nil && h.pool.CacheClient().IsConfigured(),
+		"hf_storage_configured": h.pool.HasCacheConfigured(r.Context()),
 		"snippets": map[string]string{
 			"rclone": rcloneConfig,
 			"awscli": awsCLIConfig,

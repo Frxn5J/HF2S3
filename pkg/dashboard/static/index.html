@@ -111,16 +111,49 @@
           </div>
           <div class="hero-right">
             <div class="quick-pill">
-              <span class="pill-title">Cuentas Activas</span>
+              <span class="pill-title">Cuentas Datasets</span>
               <span class="pill-number" id="metricActiveAccounts">0</span>
             </div>
             <div class="quick-pill">
-              <span class="pill-title">Buckets</span>
+              <span class="pill-title">Buckets Caché</span>
+              <span class="pill-number" id="metricCacheBucketsCount">0</span>
+            </div>
+            <div class="quick-pill">
+              <span class="pill-title">Buckets S3</span>
               <span class="pill-number" id="metricBucketsCount">0</span>
             </div>
             <div class="quick-pill">
               <span class="pill-title">Objetos Almacenados</span>
               <span class="pill-number" id="metricObjectsCount">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cache Hero Metric Card (Tier 1 S3 Cache) -->
+        <div class="hero-metric-card" style="margin-top: 1.25rem; border-color: rgba(99, 102, 241, 0.35);">
+          <div class="hero-left">
+            <span class="card-label">⚡ Pool de Caché S3 Privado (Tier 1 - Descargas Directas Presignadas)</span>
+            <div class="hero-value-wrap">
+              <h3 class="hero-val" id="metricCacheTotalCapacity">0 GB</h3>
+              <span class="hero-sub" id="metricCacheStoragePercent">0% usado</span>
+            </div>
+            <div class="progress-bar-wrap">
+              <div class="progress-bar" id="cacheProgressBar" style="width: 0%; background: linear-gradient(90deg, #6366f1, #a855f7);"></div>
+            </div>
+            <div class="progress-stats">
+              <span><strong>Caché Usada:</strong> <span id="metricCacheUsedStorage">0 MB</span></span>
+              <span><strong>Disponible:</strong> <span id="metricCacheFreeStorage">0 GB</span></span>
+              <span><strong>Objetos en Caché:</strong> <span id="metricCachedObjectsCount">0</span></span>
+            </div>
+          </div>
+          <div class="hero-right">
+            <div class="quick-pill">
+              <span class="pill-title">Buckets Caché Activos</span>
+              <span class="pill-number" id="metricCacheBucketsActive">0</span>
+            </div>
+            <div class="quick-pill">
+              <span class="pill-title">Ancho de Banda VPS</span>
+              <span class="pill-number" style="font-size: 1.15rem; color: #10b981;">0% (Directo)</span>
             </div>
           </div>
         </div>
@@ -161,6 +194,37 @@
               </tr>
             </thead>
             <tbody id="accountsTableBody">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- SECTION 2: BUCKETS S3 DE CACHÉ (TIER 1) -->
+        <div class="pane-header-actions" style="margin-top: 2.5rem;">
+          <div>
+            <h3>Buckets S3 de Caché Privada (Tier 1 - Descargas Directas)</h3>
+            <p>Agrega múltiples buckets de Hugging Face Storage (<code>s3.hf.co</code>). Si tienes 5 cuentas, dispones de 500 GB de caché para servir archivos directamente a los clientes sin consumir CPU ni red del VPS.</p>
+          </div>
+          <button class="btn btn-primary" id="btnOpenAddCacheBucketModal">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>+ Conectar Bucket S3 de Caché</span>
+          </button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Nombre / Cuenta</th>
+                <th>Bucket S3</th>
+                <th>Endpoint / Región</th>
+                <th>Espacio Usado</th>
+                <th>Cuota Asignada</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="cacheBucketsTableBody">
               <!-- Rendered dynamically -->
             </tbody>
           </table>
@@ -490,6 +554,56 @@
           <button type="button" class="btn btn-secondary" data-close="modalAddAccount">Cancelar</button>
           <button type="submit" class="btn btn-primary" id="btnSubmitAccount">
             <span class="btn-text">Verificar y Conectar</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD CACHE BUCKET (TIER 1 MULTI-ACCOUNT) -->
+  <div class="modal-overlay hidden" id="modalAddCacheBucket">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Conectar Bucket S3 de Caché (Tier 1)</h3>
+        <button class="modal-close" data-close="modalAddCacheBucket">&times;</button>
+      </div>
+      <form id="formAddCacheBucket">
+        <div class="form-group">
+          <label>Nombre Identificador de Cuenta / Bucket <span class="required">*</span></label>
+          <input type="text" class="input-text" id="cacheBucketNameInput" placeholder="Ej. HF Caché Cuenta 1" required />
+          <span class="field-hint">Identifica a qué cuenta o usuario de Hugging Face corresponde este bucket.</span>
+        </div>
+        <div class="form-group">
+          <label>Endpoint S3</label>
+          <input type="text" class="input-text" id="cacheBucketEndpointInput" value="https://s3.hf.co" placeholder="https://s3.hf.co" required />
+          <span class="field-hint">Endpoint S3 oficial de Hugging Face Storage: <code>https://s3.hf.co</code></span>
+        </div>
+        <div class="form-group">
+          <label>Región S3</label>
+          <input type="text" class="input-text" id="cacheBucketRegionInput" value="us-east-1" placeholder="us-east-1" required />
+        </div>
+        <div class="form-group">
+          <label>Access Key (HFAK...) <span class="required">*</span></label>
+          <input type="text" class="input-text" id="cacheBucketAccessKeyInput" placeholder="HFAK..." required />
+          <span class="field-hint">Obtén la Access Key de tu bucket en Hugging Face Storage.</span>
+        </div>
+        <div class="form-group">
+          <label>Secret Key <span class="required">*</span></label>
+          <input type="password" class="input-text" id="cacheBucketSecretKeyInput" placeholder="••••••••••••" required />
+        </div>
+        <div class="form-group">
+          <label>Nombre del Bucket S3 <span class="required">*</span></label>
+          <input type="text" class="input-text" id="cacheBucketTargetInput" placeholder="usuario/mi-cache-bucket" required />
+        </div>
+        <div class="form-group">
+          <label>Cuota Asignada (GB)</label>
+          <input type="number" class="input-text" id="cacheBucketQuotaInput" value="100" min="1" max="1000" />
+          <span class="field-hint">Cada cuenta de Hugging Face incluye <strong>100 GB</strong> en Storage Buckets.</span>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="modalAddCacheBucket">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitCacheBucket">
+            <span class="btn-text">Verificar y Conectar Bucket</span>
           </button>
         </div>
       </form>

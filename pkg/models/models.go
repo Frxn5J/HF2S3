@@ -30,6 +30,22 @@ type Account struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type CacheBucket struct {
+	ID         int64     `json:"id"`
+	AccountID  int64     `json:"account_id"`
+	Name       string    `json:"name"`
+	Endpoint   string    `json:"endpoint"`
+	Region     string    `json:"region"`
+	AccessKey  string    `json:"access_key"`
+	SecretKey  string    `json:"secret_key,omitempty"`
+	BucketName string    `json:"bucket_name"`
+	QuotaBytes int64     `json:"quota_bytes"`
+	UsedBytes  int64     `json:"used_bytes"`
+	IsActive   bool      `json:"is_active"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type Bucket struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
@@ -98,15 +114,19 @@ type MultipartPart struct {
 }
 
 type PoolStats struct {
-	TotalCapacityBytes int64 `json:"total_capacity_bytes"`
-	TotalUsedBytes     int64 `json:"total_used_bytes"`
-	TotalFreeBytes     int64 `json:"total_free_bytes"`
-	TotalAccounts      int   `json:"total_accounts"`
-	ActiveAccounts     int   `json:"active_accounts"`
-	TotalBuckets       int   `json:"total_buckets"`
-	TotalObjects       int   `json:"total_objects"`
-	CachedObjects      int   `json:"cached_objects"`
-	ColdObjects        int   `json:"cold_objects"`
+	TotalCapacityBytes      int64 `json:"total_capacity_bytes"`
+	TotalUsedBytes          int64 `json:"total_used_bytes"`
+	TotalFreeBytes          int64 `json:"total_free_bytes"`
+	TotalAccounts           int   `json:"total_accounts"`
+	ActiveAccounts          int   `json:"active_accounts"`
+	TotalBuckets            int   `json:"total_buckets"`
+	TotalObjects            int   `json:"total_objects"`
+	CachedObjects           int   `json:"cached_objects"`
+	ColdObjects             int   `json:"cold_objects"`
+	TotalCacheBuckets       int   `json:"total_cache_buckets"`
+	ActiveCacheBuckets      int   `json:"active_cache_buckets"`
+	TotalCacheCapacityBytes int64 `json:"total_cache_capacity_bytes"`
+	TotalCacheUsedBytes     int64 `json:"total_cache_used_bytes"`
 }
 
 type SystemSettings struct {
