@@ -2,17 +2,16 @@ package hfstorage
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
+
+	"hf2s3/pkg/sigv4"
 )
 
 var (
@@ -40,6 +39,25 @@ type S3ClientConfig struct {
 	HTTPClient *http.Client
 }
 
+// defaultHTTPClient has no overall Timeout on purpose: cache promotions and
+// downloads stream multi-GB bodies, and http.Client.Timeout would abort them
+// mid-transfer. Connection and header timeouts still bound stalled peers.
+func defaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   15 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   16,
+		},
+	}
+}
+
 func NewS3Client(cfg S3ClientConfig) *S3Client {
 	endpoint := strings.TrimRight(cfg.Endpoint, "/")
 	if endpoint == "" {
@@ -51,9 +69,7 @@ func NewS3Client(cfg S3ClientConfig) *S3Client {
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{
-			Timeout: 60 * time.Second,
-		}
+		client = defaultHTTPClient()
 	}
 
 	return &S3Client{
@@ -79,7 +95,7 @@ func (c *S3Client) Endpoint() string {
 	return c.endpoint
 }
 
-// buildURLPath constructs the URL path respecting namespace and bucket
+// buildURLPath constructs the (decoded) URL path respecting namespace and bucket.
 func (c *S3Client) buildURLPath(bucket, key string) string {
 	cleanKey := strings.TrimPrefix(key, "/")
 	targetBucket := bucket
@@ -93,6 +109,29 @@ func (c *S3Client) buildURLPath(bucket, key string) string {
 	return fmt.Sprintf("/%s/%s", targetBucket, cleanKey)
 }
 
+// newRequest builds a request whose wire path is exactly the AWS-encoded form
+// of the signed path, so keys containing spaces, '+', '?', '#' or '%' work.
+func (c *S3Client) newRequest(ctx context.Context, method, bucket, key string, body io.Reader) (*http.Request, error) {
+	parsedEndpoint, err := url.Parse(c.endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse endpoint: %w", err)
+	}
+	reqPath := c.buildURLPath(bucket, key)
+
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	req.URL = &url.URL{
+		Scheme:  parsedEndpoint.Scheme,
+		Host:    parsedEndpoint.Host,
+		Path:    reqPath,
+		RawPath: sigv4.URIEncode(reqPath, false),
+	}
+	req.Host = parsedEndpoint.Host
+	return req, nil
+}
+
 // PresignGetObject generates an AWS SigV4 presigned GET URL for direct client download.
 func (c *S3Client) PresignGetObject(bucket, key string, expires time.Duration) (string, error) {
 	if !c.IsConfigured() {
@@ -102,105 +141,42 @@ func (c *S3Client) PresignGetObject(bucket, key string, expires time.Duration) (
 		expires = 15 * time.Minute
 	}
 
-	targetBucket := bucket
-	if targetBucket == "" {
-		targetBucket = c.bucket
-	}
-
 	parsedEndpoint, err := url.Parse(c.endpoint)
 	if err != nil {
 		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
 
-	reqPath := c.buildURLPath(targetBucket, key)
-	now := time.Now().UTC()
-	dateStamp := now.Format("20060102")
-	amzDate := now.Format("20060102T150405Z")
-	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", dateStamp, c.region)
-	credential := fmt.Sprintf("%s/%s", c.accessKey, credentialScope)
-	expiresSec := int64(expires.Seconds())
-
-	queryParams := url.Values{}
-	queryParams.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
-	queryParams.Set("X-Amz-Credential", credential)
-	queryParams.Set("X-Amz-Date", amzDate)
-	queryParams.Set("X-Amz-Expires", fmt.Sprintf("%d", expiresSec))
-	queryParams.Set("X-Amz-SignedHeaders", "host")
-
-	canonicalQuery := buildCanonicalQueryString(queryParams)
-
-	host := parsedEndpoint.Host
-	canonicalHeaders := fmt.Sprintf("host:%s\n", host)
-	signedHeaders := "host"
-	payloadHash := "UNSIGNED-PAYLOAD"
-
-	canonicalURI := escapePath(reqPath)
-	canonicalRequest := fmt.Sprintf("GET\n%s\n%s\n%s\n%s\n%s",
-		canonicalURI,
-		canonicalQuery,
-		canonicalHeaders,
-		signedHeaders,
-		payloadHash,
-	)
-
-	crHash := sha256.Sum256([]byte(canonicalRequest))
-	crHashHex := hex.EncodeToString(crHash[:])
-
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		amzDate,
-		credentialScope,
-		crHashHex,
-	)
-
-	signingKey := deriveSigningKey(c.secretKey, dateStamp, c.region, "s3")
-	signature := hmacHex(signingKey, []byte(stringToSign))
-
-	queryParams.Set("X-Amz-Signature", signature)
-
-	presignedURL := fmt.Sprintf("%s://%s%s?%s",
+	return sigv4.PresignGET(
 		parsedEndpoint.Scheme,
-		host,
-		reqPath,
-		queryParams.Encode(),
-	)
-
-	return presignedURL, nil
+		parsedEndpoint.Host,
+		c.buildURLPath(bucket, key),
+		c.accessKey, c.secretKey, c.region, "s3",
+		time.Now(), expires,
+	), nil
 }
 
 // PutObject uploads an unencrypted object to the Hugging Face Storage Bucket.
+// body is streamed (never buffered); size must be the exact body length.
 func (c *S3Client) PutObject(ctx context.Context, bucket, key string, body io.Reader, size int64, contentType string) error {
 	if !c.IsConfigured() {
 		return ErrStorageConfig
 	}
 
-	targetBucket := bucket
-	if targetBucket == "" {
-		targetBucket = c.bucket
-	}
-
-	parsedEndpoint, err := url.Parse(c.endpoint)
-	if err != nil {
-		return fmt.Errorf("parse endpoint: %w", err)
-	}
-
-	reqPath := c.buildURLPath(targetBucket, key)
-	fullURL := fmt.Sprintf("%s://%s%s", parsedEndpoint.Scheme, parsedEndpoint.Host, reqPath)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, fullURL, body)
+	req, err := c.newRequest(ctx, http.MethodPut, bucket, key, body)
 	if err != nil {
 		return fmt.Errorf("create put request: %w", err)
 	}
 
-	if size > 0 {
-		req.ContentLength = size
+	req.ContentLength = size
+	if size == 0 {
+		req.Body = http.NoBody
 	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 	req.Header.Set("Content-Type", contentType)
 
-	now := time.Now().UTC()
-	c.signRequest(req, now, "UNSIGNED-PAYLOAD")
+	c.signRequest(req, time.Now().UTC(), sigv4.UnsignedPayload)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -209,7 +185,7 @@ func (c *S3Client) PutObject(ctx context.Context, bucket, key string, body io.Re
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("storage bucket put failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
@@ -222,26 +198,12 @@ func (c *S3Client) DeleteObject(ctx context.Context, bucket, key string) error {
 		return ErrStorageConfig
 	}
 
-	targetBucket := bucket
-	if targetBucket == "" {
-		targetBucket = c.bucket
-	}
-
-	parsedEndpoint, err := url.Parse(c.endpoint)
-	if err != nil {
-		return fmt.Errorf("parse endpoint: %w", err)
-	}
-
-	reqPath := c.buildURLPath(targetBucket, key)
-	fullURL := fmt.Sprintf("%s://%s%s", parsedEndpoint.Scheme, parsedEndpoint.Host, reqPath)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fullURL, nil)
+	req, err := c.newRequest(ctx, http.MethodDelete, bucket, key, nil)
 	if err != nil {
 		return fmt.Errorf("create delete request: %w", err)
 	}
 
-	now := time.Now().UTC()
-	c.signRequest(req, now, "UNSIGNED-PAYLOAD")
+	c.signRequest(req, time.Now().UTC(), sigv4.UnsignedPayload)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -253,7 +215,7 @@ func (c *S3Client) DeleteObject(ctx context.Context, bucket, key string) error {
 		return nil
 	}
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("storage bucket delete failed (status %d): %s", resp.StatusCode, string(respBody))
 }
 
@@ -263,26 +225,12 @@ func (c *S3Client) GetObject(ctx context.Context, bucket, key string) (io.ReadCl
 		return nil, 0, "", ErrStorageConfig
 	}
 
-	targetBucket := bucket
-	if targetBucket == "" {
-		targetBucket = c.bucket
-	}
-
-	parsedEndpoint, err := url.Parse(c.endpoint)
-	if err != nil {
-		return nil, 0, "", fmt.Errorf("parse endpoint: %w", err)
-	}
-
-	reqPath := c.buildURLPath(targetBucket, key)
-	fullURL := fmt.Sprintf("%s://%s%s", parsedEndpoint.Scheme, parsedEndpoint.Host, reqPath)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, bucket, key, nil)
 	if err != nil {
 		return nil, 0, "", fmt.Errorf("create get request: %w", err)
 	}
 
-	now := time.Now().UTC()
-	c.signRequest(req, now, "UNSIGNED-PAYLOAD")
+	c.signRequest(req, time.Now().UTC(), sigv4.UnsignedPayload)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -294,7 +242,7 @@ func (c *S3Client) GetObject(ctx context.Context, bucket, key string) (io.ReadCl
 		return nil, 0, "", ErrObjectNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 		return nil, 0, "", fmt.Errorf("storage bucket get failed (status %d): %s", resp.StatusCode, string(body))
 	}
@@ -302,113 +250,50 @@ func (c *S3Client) GetObject(ctx context.Context, bucket, key string) (io.ReadCl
 	return resp.Body, resp.ContentLength, resp.Header.Get("Content-Type"), nil
 }
 
-// signRequest applies AWS SigV4 Authorization header to an HTTP request
+// signRequest applies an AWS SigV4 Authorization header to an HTTP request.
 func (c *S3Client) signRequest(req *http.Request, t time.Time, payloadHash string) {
-	dateStamp := t.Format("20060102")
-	amzDate := t.Format("20060102T150405Z")
-
-	req.Header.Set("x-amz-date", amzDate)
-	req.Header.Set("x-amz-content-sha256", payloadHash)
-
-	host := req.URL.Host
-	if host == "" {
-		host = req.Host
-	}
-
-	headersToSign := []string{"host", "x-amz-content-sha256", "x-amz-date"}
-	sort.Strings(headersToSign)
-
-	var canonicalHeaders strings.Builder
-	for _, h := range headersToSign {
-		var val string
-		switch h {
-		case "host":
-			val = host
-		default:
-			val = req.Header.Get(h)
-		}
-		canonicalHeaders.WriteString(fmt.Sprintf("%s:%s\n", h, strings.TrimSpace(val)))
-	}
-	signedHeaders := strings.Join(headersToSign, ";")
-
-	canonicalQuery := buildCanonicalQueryString(req.URL.Query())
-	canonicalURI := escapePath(req.URL.Path)
-
-	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		req.Method,
-		canonicalURI,
-		canonicalQuery,
-		canonicalHeaders.String(),
-		signedHeaders,
-		payloadHash,
-	)
-
-	crHash := sha256.Sum256([]byte(canonicalRequest))
-	crHashHex := hex.EncodeToString(crHash[:])
-
-	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", dateStamp, c.region)
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		amzDate,
-		credentialScope,
-		crHashHex,
-	)
-
-	signingKey := deriveSigningKey(c.secretKey, dateStamp, c.region, "s3")
-	signature := hmacHex(signingKey, []byte(stringToSign))
-
-	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		c.accessKey,
-		credentialScope,
-		signedHeaders,
-		signature,
-	)
-
-	req.Header.Set("Authorization", authHeader)
+	sigv4.SignRequest(req, c.accessKey, c.secretKey, c.region, "s3", t, payloadHash)
 }
 
-func buildCanonicalQueryString(v url.Values) string {
-	if len(v) == 0 {
-		return ""
+// ErrRangeNotHonored means the server answered a ranged GET with the whole object.
+var ErrRangeNotHonored = errors.New("storage bucket ignored the Range header")
+
+// GetObjectRange downloads bytes [start, end] (inclusive; end < 0 means "to the
+// end") of an object. The Range header is not part of the signature.
+func (c *S3Client) GetObjectRange(ctx context.Context, bucket, key string, start, end int64) (io.ReadCloser, error) {
+	if !c.IsConfigured() {
+		return nil, ErrStorageConfig
 	}
-	keys := make([]string, 0, len(v))
-	for k := range v {
-		keys = append(keys, k)
+
+	req, err := c.newRequest(ctx, http.MethodGet, bucket, key, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create ranged get request: %w", err)
 	}
-	sort.Strings(keys)
-
-	var pairs []string
-	for _, k := range keys {
-		escapedKey := url.QueryEscape(k)
-		for _, val := range v[k] {
-			escapedVal := url.QueryEscape(val)
-			pairs = append(pairs, fmt.Sprintf("%s=%s", escapedKey, escapedVal))
-		}
+	if end >= 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	} else {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
 	}
-	return strings.Join(pairs, "&")
-}
 
-func escapePath(path string) string {
-	var segments []string
-	for _, seg := range strings.Split(path, "/") {
-		segments = append(segments, url.PathEscape(seg))
+	c.signRequest(req, time.Now().UTC(), sigv4.UnsignedPayload)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("storage bucket ranged get: %w", err)
 	}
-	return strings.Join(segments, "/")
-}
 
-func deriveSigningKey(secret, dateStamp, region, service string) []byte {
-	kDate := hmacSha256([]byte("AWS4"+secret), []byte(dateStamp))
-	kRegion := hmacSha256(kDate, []byte(region))
-	kService := hmacSha256(kRegion, []byte(service))
-	kSigning := hmacSha256(kService, []byte("aws4_request"))
-	return kSigning
-}
-
-func hmacSha256(key, data []byte) []byte {
-	h := hmac.New(sha256.New, key)
-	h.Write(data)
-	return h.Sum(nil)
-}
-
-func hmacHex(key, data []byte) string {
-	return hex.EncodeToString(hmacSha256(key, data))
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		return resp.Body, nil
+	case http.StatusNotFound:
+		resp.Body.Close()
+		return nil, ErrObjectNotFound
+	case http.StatusOK:
+		resp.Body.Close()
+		return nil, ErrRangeNotHonored
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("storage bucket ranged get failed (status %d): %s", resp.StatusCode, string(body))
+	}
 }

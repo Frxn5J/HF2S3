@@ -330,7 +330,7 @@
             <div class="credential-item">
               <label>Secret Access Key</label>
               <div class="copy-input-group">
-                <input type="password" id="cfgSecretKey" readonly value="hf2s3-secret-key" />
+                <input type="text" id="cfgSecretKey" readonly value="" />
                 <button class="btn btn-secondary btn-copy" data-target="cfgSecretKey">Copiar</button>
               </div>
             </div>
@@ -377,7 +377,11 @@
               <input type="text" class="input-text" id="setAdminUser" required autocomplete="username" />
             </div>
             <div class="form-group">
-              <label>Nueva Contraseña</label>
+              <label>Contraseña Actual (solo para cambiarla)</label>
+              <input type="password" class="input-text" id="setAdminCurrentPass" placeholder="Necesaria para establecer una contraseña nueva" autocomplete="current-password" />
+            </div>
+            <div class="form-group">
+              <label>Nueva Contraseña (mínimo 12 caracteres)</label>
               <input type="password" class="input-text" id="setAdminPass" placeholder="Dejar en blanco para conservar la actual" autocomplete="new-password" />
             </div>
             <div class="form-group">
@@ -402,7 +406,14 @@
             </div>
             <div class="form-group">
               <label>S3 Secret Access Key</label>
-              <input type="password" class="input-text" id="setSecretKey" required />
+              <div class="copy-input-group">
+                <input type="text" class="input-text" id="setSecretKey" readonly placeholder="Oculto: solo se muestra al generarlo" />
+                <button type="button" class="btn btn-secondary" id="btnRotateS3Secret" title="Genera un secreto aleatorio nuevo">Generar nuevo secreto</button>
+              </div>
+              <div id="rotatedSecretBox" class="backup-info-note hidden" style="margin-top:10px;">
+                <p><strong>Nuevo secreto (guárdalo ahora, no volverá a mostrarse):</strong></p>
+                <p><code id="rotatedSecretOutput" style="word-break:break-all;user-select:all;"></code></p>
+              </div>
             </div>
             <div class="form-group">
               <label>Región S3 Reportada</label>
@@ -466,13 +477,11 @@
 
           <form id="formCrypto">
             <div class="form-group">
-              <label>Frase de Paso Maestra de Cifrado (AES-256-GCM)</label>
-              <div class="copy-input-group">
-                <input type="password" class="input-text" id="setMasterKey" required autocomplete="off" />
-                <button type="button" class="btn btn-secondary" id="btnToggleMasterKeyVisibility">Mostrar</button>
-                <button type="button" class="btn btn-secondary" id="btnGenerateMasterKey" title="Generar clave aleatoria segura">Generar</button>
+              <label>Clave Maestra de Cifrado (AES-256-GCM)</label>
+              <div class="backup-info-note">
+                <p id="cryptoKeyInfo">Cargando…</p>
+                <p>La clave maestra se define en el servidor con la variable de entorno <code>HF2S3_MASTER_KEY</code> (genérala con <code>hf2s3 keygen</code>). Ya no se guarda en la base de datos ni puede verse o cambiarse desde esta consola: cambiarla dejaría ilegibles los archivos existentes.</p>
               </div>
-              <span class="field-hint">Clave única usada para derivar la llave de cifrado de todos los chunks subidos a Hugging Face. <strong>Consérvala en un lugar seguro.</strong></span>
             </div>
 
             <div class="form-group">
@@ -497,8 +506,8 @@
         <div class="glass-card settings-box" style="margin-top: 1.5rem;">
           <div class="card-header-row">
             <div>
-              <h3>Respaldo y Restauración de Base de Datos</h3>
-              <p>Descarga la base de datos completa o restaura un respaldo previo sin perder ninguna cuenta, bucket ni metadato.</p>
+              <h3>Respaldo de Base de Datos</h3>
+              <p>Descarga una copia consistente de la base de datos: sin ella no es posible reconstruir qué fragmentos forman cada archivo.</p>
             </div>
             <button type="button" class="btn btn-primary" id="btnDownloadBackup">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
@@ -508,14 +517,8 @@
 
           <hr style="border:none;border-top:1px solid var(--border-subtle);margin:1.5rem 0;" />
 
-          <h4>Restaurar Base de Datos desde Respaldo (.db)</h4>
-          <p style="font-size:0.82rem;color:var(--text-muted);margin:6px 0 14px;">Sube un archivo de base de datos SQLite previamente exportado para recuperar toda tu configuración al instante.</p>
-          <form id="formRestoreBackup" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-            <input type="file" id="restoreBackupInput" accept=".db,application/x-sqlite3" style="display:none;" />
-            <button type="button" class="btn btn-secondary" id="btnChooseBackupFile">Seleccionar Archivo .db...</button>
-            <span id="restoreBackupFileName" style="font-size:0.82rem;color:var(--text-dim);font-family:var(--font-mono);">Ningún archivo seleccionado</span>
-            <button type="submit" class="btn btn-danger" id="btnSubmitRestore" disabled>Restaurar Base de Datos</button>
-          </form>
+          <h4>Restaurar desde un respaldo</h4>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin:6px 0 14px;">La restauración se hace con el servicio detenido, para no sustituir la base de datos en uso: <code>hf2s3 restore respaldo.db</code> (valida la integridad y conserva el fichero anterior como <code>.pre-restore</code>).</p>
 
           <div class="backup-info-note" style="margin-top:1.25rem;">
             <p>El archivo descargado (<code>.db</code>) contiene todas las cuentas configuradas, buckets, objetos y la tabla de chunks cifrados. Si vas a alojar en <strong>Coolify</strong> o Docker, este archivo es autónomo y no requiere dependencias adicionales.</p>

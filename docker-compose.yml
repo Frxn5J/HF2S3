@@ -1,25 +1,55 @@
-version: '3.8'
+# HF2S3 - production compose file.
+#
+# Required variables have NO default on purpose: the gateway refuses to start with
+# missing or well-known values. Generate a complete set with:
+#     docker run --rm hf2s3:latest /app/hf2s3 keygen
+#
+# The service is only reachable through your reverse proxy (Coolify/Traefik/Caddy).
+# For local testing use:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
   hf2s3:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VERSION: ${HF2S3_VERSION:-dev}
     image: hf2s3:latest
-    container_name: hf2s3-gateway
+    container_name: ${HF2S3_CONTAINER_NAME:-hf2s3-gateway}
     restart: unless-stopped
-    ports:
-      - "${PORT:-8080}:8080"
+    expose:
+      - "8080"
     environment:
       - PORT=8080
       - HF2S3_DB=/data/hf2s3_metadata.db
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
-      - HF2S3_ACCESS_KEY=${HF2S3_ACCESS_KEY:-hf2s3-access-key}
-      - HF2S3_SECRET_KEY=${HF2S3_SECRET_KEY:-hf2s3-secret-key}
-      - HF2S3_MASTER_KEY=${HF2S3_MASTER_KEY:-hf2s3-aes-master-passphrase-2026}
+
+      # --- required secrets (no defaults) ---
+      - HF2S3_MASTER_KEY=${HF2S3_MASTER_KEY:?set HF2S3_MASTER_KEY (generate with: hf2s3 keygen)}
+      - HF2S3_ACCESS_KEY=${HF2S3_ACCESS_KEY:?set HF2S3_ACCESS_KEY}
+      - HF2S3_SECRET_KEY=${HF2S3_SECRET_KEY:?set HF2S3_SECRET_KEY}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:?set ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+
+      # --- public address (used for presigned links; must equal the Host clients send) ---
+      - HF2S3_PUBLIC_URL=${HF2S3_PUBLIC_URL:-}
+      - HF2S3_TRUST_PROXY=${HF2S3_TRUST_PROXY:-true}
+
+      # --- upgrading from a release that stored the master key in the database ---
+      # The old key is found in the database automatically. Only set this when
+      # restoring an old backup onto a fresh database.
+      - HF2S3_LEGACY_MASTER_KEYS=${HF2S3_LEGACY_MASTER_KEYS:-}
+
+      # --- behaviour ---
       - HF2S3_CHUNK_SIZE_MB=${HF2S3_CHUNK_SIZE_MB:-32}
       - HF2S3_REGION=${HF2S3_REGION:-us-east-1}
+      - S3_GET_REDIRECT=${S3_GET_REDIRECT:-auto}
+      - HF2S3_CORS_ORIGINS=${HF2S3_CORS_ORIGINS:-}
+      - HF2S3_METRICS_TOKEN=${HF2S3_METRICS_TOKEN:-}
+      - HF2S3_BACKUP_INTERVAL_HOURS=${HF2S3_BACKUP_INTERVAL_HOURS:-24}
+      - HF2S3_BACKUP_KEEP=${HF2S3_BACKUP_KEEP:-7}
+      - HF2S3_LOG_LEVEL=${HF2S3_LOG_LEVEL:-info}
+
+      # --- Tier 1 cache bucket (optional; more can be added in the console) ---
       - HF_STORAGE_ENDPOINT=${HF_STORAGE_ENDPOINT:-https://s3.hf.co}
       - HF_STORAGE_REGION=${HF_STORAGE_REGION:-us-east-1}
       - HF_STORAGE_ACCESS_KEY=${HF_STORAGE_ACCESS_KEY:-}
@@ -27,13 +57,27 @@ services:
       - HF_STORAGE_BUCKET=${HF_STORAGE_BUCKET:-}
     volumes:
       - hf2s3_data:/data
+    # Give in-flight uploads time to finish on redeploy (HF2S3_SHUTDOWN_TIMEOUT_SECONDS defaults to 30).
+    stop_grace_period: 45s
+    # Hardening: the entrypoint needs CHOWN/SETUID/SETGID once to fix volume ownership and drop root.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/ready"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 20s
 
 volumes:
   hf2s3_data:
-    name: hf2s3_data
+    name: ${HF2S3_VOLUME_NAME:-hf2s3_data}

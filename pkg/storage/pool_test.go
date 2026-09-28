@@ -312,7 +312,7 @@ func TestConcurrentMultipartUploads(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	uploadID, err := pool.InitiateMultipartUpload(ctx, "test-bucket", "large-file.bin", "application/octet-stream")
+	uploadID, err := pool.InitiateMultipartUpload(ctx, "test-bucket", "large-file.bin", "application/octet-stream", nil)
 	if err != nil {
 		t.Fatalf("InitiateMultipartUpload failed: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestConcurrentMultipartUploads(t *testing.T) {
 	default:
 	}
 
-	obj, err := pool.CompleteMultipartUpload(ctx, uploadID)
+	obj, err := pool.CompleteMultipartUpload(ctx, uploadID, nil)
 	if err != nil {
 		t.Fatalf("CompleteMultipartUpload failed: %v", err)
 	}
@@ -487,4 +487,3 @@ func TestRateLimitFailoverBetweenAccounts(t *testing.T) {
 		}
 	}
 }
-

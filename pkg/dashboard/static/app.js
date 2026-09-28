@@ -1,23 +1,21 @@
 // HF2S3 Dashboard Controller
 document.addEventListener('DOMContentLoaded', () => {
-  // Global fetch interceptor to inject admin session token and handle 401
+  // Escape untrusted text (object keys, account names, server messages...) before it
+  // is placed inside an HTML template. Everything dynamic in innerHTML goes through this.
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // Global fetch wrapper: the session lives in an HttpOnly cookie that the browser sends by
+  // itself (no token is ever readable from JavaScript). It only handles 401 -> login overlay.
   const originalFetch = window.fetch;
   window.fetch = async function(url, options = {}) {
-    options = options || {};
-    options.headers = options.headers || {};
-    const token = localStorage.getItem('hf2s3_admin_token') || '';
-    if (token) {
-      if (options.headers instanceof Headers) {
-        options.headers.set('X-Admin-Token', token);
-        options.headers.set('Authorization', 'Bearer ' + token);
-      } else if (Array.isArray(options.headers)) {
-        options.headers.push(['X-Admin-Token', token]);
-        options.headers.push(['Authorization', 'Bearer ' + token]);
-      } else {
-        options.headers['X-Admin-Token'] = token;
-        options.headers['Authorization'] = 'Bearer ' + token;
-      }
-    }
+    options = Object.assign({ credentials: 'same-origin' }, options || {});
     const res = await originalFetch(url, options);
     if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/') && !url.includes('/api/auth/')) {
       showLoginOverlay();
@@ -136,10 +134,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Settings Tab - Crypto & Chunk Settings Elements
   const formCrypto = document.getElementById('formCrypto');
-  const setMasterKey = document.getElementById('setMasterKey');
-  const btnToggleMasterKeyVisibility = document.getElementById('btnToggleMasterKeyVisibility');
-  const btnGenerateMasterKey = document.getElementById('btnGenerateMasterKey');
+  const cryptoKeyInfo = document.getElementById('cryptoKeyInfo');
   const setChunkSize = document.getElementById('setChunkSize');
+  const setAdminCurrentPass = document.getElementById('setAdminCurrentPass');
+  const btnRotateS3Secret = document.getElementById('btnRotateS3Secret');
+  const rotatedSecretBox = document.getElementById('rotatedSecretBox');
+  const rotatedSecretOutput = document.getElementById('rotatedSecretOutput');
 
   // Settings Tab - HF Storage Cache Settings Elements
   const hfStorageForm = document.getElementById('hfStorageForm');
@@ -150,12 +150,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const setHFStorageBucket = document.getElementById('setHFStorageBucket');
   const hfStorageStatusBadge = document.getElementById('hfStorageStatusBadge');
 
-  // Settings Tab - Database Backup & Restore Elements
-  const formRestoreBackup = document.getElementById('formRestoreBackup');
-  const restoreBackupInput = document.getElementById('restoreBackupInput');
-  const btnChooseBackupFile = document.getElementById('btnChooseBackupFile');
-  const restoreBackupFileName = document.getElementById('restoreBackupFileName');
-  const btnSubmitRestore = document.getElementById('btnSubmitRestore');
 
   // Tab Titles
   const tabMetadata = {
@@ -367,9 +361,9 @@ document.addEventListener('DOMContentLoaded', () => {
           card.innerHTML = `
             <div class="account-card-header">
               <div>
-                <div class="account-user">${acc.name}</div>
+                <div class="account-user">${escapeHtml(acc.name)}</div>
                 <div class="account-repo" style="font-size:0.8rem;color:var(--text-muted);">
-                  <code>${acc.repo_name}</code>
+                  <code>${escapeHtml(acc.repo_name)}</code>
                   <span style="font-size:0.65rem;color:var(--accent-cyan);margin-left:4px;font-weight:600;">(PÚBLICO)</span>
                 </div>
               </div>
@@ -443,11 +437,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
           tr.innerHTML = `
             <td>
-              <strong>${acc.name}</strong><br/>
-              <span style="font-size:0.75rem; color:var(--text-dim)">@${acc.username}</span>
+              <strong>${escapeHtml(acc.name)}</strong><br/>
+              <span style="font-size:0.75rem; color:var(--text-dim)">@${escapeHtml(acc.username)}</span>
             </td>
             <td>
-              <code>${acc.repo_name}</code>
+              <code>${escapeHtml(acc.repo_name)}</code>
               <span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(6,182,212,0.12);color:var(--accent-cyan);border:1px solid rgba(6,182,212,0.25);font-weight:600;margin-left:4px;">PÚBLICO</span>
             </td>
             <td title="Límites Hugging Face (5 min): API: ${apiRem}/${apiLim} | Resolvers: ${resRem}/${resLim} | Pages: ${pagesRem}/${pagesLim}">
@@ -473,13 +467,14 @@ document.addEventListener('DOMContentLoaded', () => {
               </span>
             </td>
             <td>
-              <button class="btn btn-xs btn-secondary btn-sync-acc" data-id="${acc.id}" title="Sincronizar uso">Sync</button>
-              <button class="btn btn-xs btn-outline btn-edit-acc" data-id="${acc.id}" title="Editar detalles de la cuenta">Editar</button>
-              <button class="btn btn-xs btn-outline btn-quota-acc" data-id="${acc.id}" data-quota="${quotaGBVal}" title="Ajustar cuota en GB (0 para Dinámica)">Cuota</button>
-              <button class="btn btn-xs btn-outline btn-toggle-acc" data-id="${acc.id}">
+              <button class="btn btn-xs btn-secondary btn-sync-acc" data-id="${escapeHtml(acc.id)}" title="Sincronizar uso">Sync</button>
+              <button class="btn btn-xs btn-outline btn-edit-acc" data-id="${escapeHtml(acc.id)}" title="Editar detalles de la cuenta">Editar</button>
+              <button class="btn btn-xs btn-outline btn-quota-acc" data-id="${escapeHtml(acc.id)}" data-quota="${quotaGBVal}" title="Ajustar cuota en GB (0 para Dinámica)">Cuota</button>
+              <button class="btn btn-xs btn-outline btn-toggle-acc" data-id="${escapeHtml(acc.id)}">
                 ${acc.is_active ? 'Desactivar' : 'Activar'}
               </button>
-              <button class="btn btn-xs btn-danger btn-del-acc" data-id="${acc.id}">Eliminar</button>
+              <button class="btn btn-xs btn-outline btn-drain-acc" data-id="${escapeHtml(acc.id)}" title="Mueve todos sus datos a las demás cuentas para poder eliminarla">Vaciar</button>
+              <button class="btn btn-xs btn-danger btn-del-acc" data-id="${escapeHtml(acc.id)}">Eliminar</button>
             </td>
           `;
           accountsTableBody.appendChild(tr);
@@ -549,11 +544,41 @@ document.addEventListener('DOMContentLoaded', () => {
           });
         });
 
+        document.querySelectorAll('.btn-drain-acc').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('¿Vaciar esta cuenta? Se desactivará y todos sus datos se copiarán a las demás cuentas activas. Puede tardar.')) return;
+            const id = btn.dataset.id;
+            const res = await fetch(`/api/accounts/${id}/drain`, { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              showToast(data.error || 'No se pudo iniciar el vaciado', 'error');
+              return;
+            }
+            showToast(`Vaciado iniciado (${data.total || 0} fragmentos)`);
+            const poll = setInterval(async () => {
+              const st = await (await fetch(`/api/accounts/${id}/drain`)).json().catch(() => null);
+              if (!st) { clearInterval(poll); return; }
+              if (!st.running) {
+                clearInterval(poll);
+                showToast(st.error ? st.error : 'Vaciado completado', st.error ? 'error' : 'success');
+                loadAccounts();
+                loadStats();
+              }
+            }, 3000);
+            loadAccounts();
+          });
+        });
+
         document.querySelectorAll('.btn-del-acc').forEach(btn => {
           btn.addEventListener('click', async () => {
             if (!confirm('¿Seguro que deseas eliminar esta cuenta?')) return;
             const id = btn.dataset.id;
-            await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+            const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              showToast(err.error || 'No se pudo eliminar la cuenta', 'error');
+              return;
+            }
             loadAccounts();
             loadStats();
             showToast('Cuenta removida');
@@ -677,9 +702,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const quotaGB = (cb.quota_bytes / (1024 * 1024 * 1024)).toFixed(0);
         const row = document.createElement('tr');
         row.innerHTML = `
-          <td><strong>${cb.name}</strong></td>
-          <td><code>${cb.bucket_name}</code></td>
-          <td><span style="font-size:0.85rem;color:var(--text-muted);">${cb.endpoint} (${cb.region})</span></td>
+          <td><strong>${escapeHtml(cb.name)}</strong></td>
+          <td><code>${escapeHtml(cb.bucket_name)}</code></td>
+          <td><span style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(cb.endpoint)} (${escapeHtml(cb.region)})</span></td>
           <td>
             <div class="progress-bar-wrap" style="width: 130px; margin-bottom: 4px;">
               <div class="progress-bar" style="width: ${Math.max(usedPct, 2)}%; background: linear-gradient(90deg, #6366f1, #a855f7);"></div>
@@ -693,10 +718,10 @@ document.addEventListener('DOMContentLoaded', () => {
             </span>
           </td>
           <td>
-            <button class="btn btn-xs btn-outline btn-toggle-cb" data-id="${cb.id}">
+            <button class="btn btn-xs btn-outline btn-toggle-cb" data-id="${escapeHtml(cb.id)}">
               ${cb.is_active ? 'Pausar' : 'Activar'}
             </button>
-            <button class="btn btn-xs btn-danger btn-del-cb" data-id="${cb.id}" title="Eliminar este bucket de caché">
+            <button class="btn btn-xs btn-danger btn-del-cb" data-id="${escapeHtml(cb.id)}" title="Eliminar este bucket de caché">
               Eliminar
             </button>
           </td>
@@ -804,11 +829,11 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.innerHTML = `
           <span class="bucket-name-wrap">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-            <span>${b.name}</span>
+            <span>${escapeHtml(b.name)}</span>
           </span>
           <div class="bucket-btn-actions">
-            <span class="bucket-item-badge">${b.object_count}</span>
-            <button class="btn btn-xs btn-danger btn-del-bucket" data-name="${b.name}" title="Eliminar bucket">&times;</button>
+            <span class="bucket-item-badge">${escapeHtml(b.object_count)}</span>
+            <button class="btn btn-xs btn-danger btn-del-bucket" data-name="${escapeHtml(b.name)}" title="Eliminar bucket">&times;</button>
           </div>
         `;
         btn.addEventListener('click', (e) => {
@@ -824,7 +849,7 @@ document.addEventListener('DOMContentLoaded', () => {
           e.stopPropagation();
           const name = btn.dataset.name;
           if (!confirm(`¿Eliminar el bucket "${name}"? Debe estar vacío.`)) return;
-          const res = await fetch(`/api/buckets/${name}`, { method: 'DELETE' });
+          const res = await fetch(`/api/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' });
           if (!res.ok) {
             const err = await res.json();
             showToast(err.error || 'No se pudo eliminar el bucket', 'error');
@@ -883,7 +908,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadObjectsForBucket(bucket) {
     try {
       filesTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">Cargando archivos...</td></tr>';
-      const res = await fetch(`/api/objects?bucket=${bucket}`);
+      const res = await fetch(`/api/objects?bucket=${encodeURIComponent(bucket)}`);
       if (!res.ok) return;
       allFiles = await res.json() || [];
       activeBucketStats.textContent = `${allFiles.length} archivo(s)`;
@@ -915,9 +940,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       let cacheActionBtn = '';
       if (f.has_cache) {
-        cacheActionBtn = `<button class="btn btn-xs btn-outline btn-evict-file" data-key="${f.key}" title="Desalojar copia de la caché S3 (el original cifrado se preserva en dataset)">Desalojar</button>`;
+        cacheActionBtn = `<button class="btn btn-xs btn-outline btn-evict-file" data-key="${escapeHtml(f.key)}" title="Desalojar copia de la caché S3 (el original cifrado se preserva en dataset)">Desalojar</button>`;
       } else if (f.has_cold) {
-        cacheActionBtn = `<button class="btn btn-xs btn-outline btn-promote-file" data-key="${f.key}" title="Promover copia sin cifrar a la caché S3">Promover</button>`;
+        cacheActionBtn = `<button class="btn btn-xs btn-outline btn-promote-file" data-key="${escapeHtml(f.key)}" title="Promover copia sin cifrar a la caché S3">Promover</button>`;
       }
 
       const tr = document.createElement('tr');
@@ -925,30 +950,53 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>
           <span class="file-key-cell">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
-            <strong>${f.key}</strong>
+            <strong>${escapeHtml(f.key)}</strong>
           </span>
         </td>
         <td>${formatBytes(f.size)}</td>
         <td>${tierBadges}</td>
-        <td><code style="font-size:0.75rem">${(f.etag || '').replace(/"/g, '')}</code></td>
-        <td><span style="font-size:0.75rem;color:var(--text-dim)">${f.content_type || 'binary'}</span></td>
+        <td><code style="font-size:0.75rem">${escapeHtml((f.etag || '').replace(/"/g, ''))}</code></td>
+        <td><span style="font-size:0.75rem;color:var(--text-dim)">${escapeHtml(f.content_type || 'binary')}</span></td>
         <td><span style="font-size:0.78rem">${new Date(f.updated_at).toLocaleString()}</span></td>
         <td>
-          <a href="/media/${encodeURIComponent(activeBucket)}/${encodeURIComponent(f.key)}" target="_blank" class="btn btn-xs btn-outline btn-stream" title="Descarga Directa o Streaming Multimedia">Stream</a>
-          <button class="btn btn-xs btn-secondary btn-dl-file" data-key="${f.key}">Descargar</button>
+          <button class="btn btn-xs btn-outline btn-stream-file" data-key="${escapeHtml(f.key)}" title="Genera un enlace firmado con caducidad para reproducir o descargar">Enlace</button>
+          <button class="btn btn-xs btn-secondary btn-dl-file" data-key="${escapeHtml(f.key)}">Descargar</button>
           ${cacheActionBtn}
-          <button class="btn btn-xs btn-outline btn-inspect-file" data-key="${f.key}" title="Ver distribución de chunks en HF">Chunks</button>
-          <button class="btn btn-xs btn-danger btn-del-file" data-key="${f.key}">Borrar</button>
+          <button class="btn btn-xs btn-outline btn-inspect-file" data-key="${escapeHtml(f.key)}" title="Ver distribución de chunks en HF">Chunks</button>
+          <button class="btn btn-xs btn-danger btn-del-file" data-key="${escapeHtml(f.key)}">Borrar</button>
         </td>
       `;
       filesTableBody.appendChild(tr);
     });
 
     // Actions
+    document.querySelectorAll('.btn-stream-file').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const key = btn.dataset.key;
+        try {
+          const res = await fetch('/api/objects/presign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bucket: activeBucket, key, expires_seconds: 3600 })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showToast(data.error || 'No se pudo generar el enlace', 'error');
+            return;
+          }
+          try { await navigator.clipboard.writeText(data.url); } catch (e) { /* clipboard may be unavailable */ }
+          showToast('Enlace firmado copiado (caduca en 1 hora)');
+          window.open(data.url, '_blank', 'noopener,noreferrer');
+        } catch (e) {
+          showToast('Error de comunicación con el gateway', 'error');
+        }
+      });
+    });
+
     document.querySelectorAll('.btn-dl-file').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.dataset.key;
-        window.location.href = `/api/objects/download?bucket=${activeBucket}&key=${encodeURIComponent(key)}`;
+        window.location.href = `/api/objects/download?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(key)}`;
       });
     });
 
@@ -956,7 +1004,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', async () => {
         const key = btn.dataset.key;
         if (!confirm(`¿Eliminar ${key} de ${activeBucket}? Los chunks se liberarán de Hugging Face.`)) return;
-        await fetch(`/api/objects?bucket=${activeBucket}&key=${encodeURIComponent(key)}`, { method: 'DELETE' });
+        await fetch(`/api/objects?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(key)}`, { method: 'DELETE' });
         showToast(`Archivo ${key} eliminado`);
         loadObjectsForBucket(activeBucket);
         loadStats();
@@ -1036,13 +1084,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Inspect Chunks Modal
   async function inspectChunks(key) {
     try {
-      const res = await fetch(`/api/objects/detail?bucket=${activeBucket}&key=${encodeURIComponent(key)}`);
+      const res = await fetch(`/api/objects/detail?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(key)}`);
       if (!res.ok) return;
       const data = await res.json();
 
       chunkInspectSummary.innerHTML = `
         <div style="margin-bottom:14px;background:rgba(255,255,255,0.03);padding:12px;border-radius:var(--radius-md);">
-          <div><strong>Objeto:</strong> ${data.object.key} (${formatBytes(data.object.size)})</div>
+          <div><strong>Objeto:</strong> ${escapeHtml(data.object.key)} (${formatBytes(data.object.size)})</div>
           <div style="font-size:0.8rem;color:var(--text-dim);margin-top:4px;">Dividido en <strong>${data.chunks.length}</strong> chunks cifrados con AES-256-GCM y distribuidos en el pool de Hugging Face.</div>
         </div>
       `;
@@ -1051,12 +1099,12 @@ document.addEventListener('DOMContentLoaded', () => {
       data.chunks.forEach(c => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>#${c.chunk_index + 1}</td>
-          <td>${c.offset_bytes} - ${c.offset_bytes + c.size_bytes}</td>
+          <td>#${Number(c.chunk_index) + 1}</td>
+          <td>${Number(c.offset_bytes)} - ${Number(c.offset_bytes) + Number(c.size_bytes)}</td>
           <td>${formatBytes(c.size_bytes)}</td>
           <td>${formatBytes(c.cipher_size_bytes)}</td>
-          <td><span class="badge-active">${c.account_name}</span></td>
-          <td><code>${c.remote_path}</code></td>
+          <td><span class="badge-active">${escapeHtml(c.account_name)}</span></td>
+          <td><code>${escapeHtml(c.remote_path)}</code></td>
         `;
         chunksTableBody.appendChild(tr);
       });
@@ -1152,11 +1200,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       cfgEndpoint.value = settingsCache.endpoint;
       cfgAccessKey.value = settingsCache.access_key_id;
-      cfgSecretKey.value = settingsCache.secret_access_key;
+      cfgSecretKey.value = settingsCache.secret_access_key_set ? '•••••••• (solo visible al rotarlo)' : '';
       cfgRegion.value = settingsCache.s3_region;
 
       setAccessKey.value = settingsCache.access_key_id;
-      setSecretKey.value = settingsCache.secret_access_key;
+      setSecretKey.value = '';
       setRegion.value = settingsCache.s3_region;
 
       // Populate Admin Settings
@@ -1164,7 +1212,15 @@ document.addEventListener('DOMContentLoaded', () => {
       if (settingsCurrentAdminBadge) settingsCurrentAdminBadge.textContent = settingsCache.admin_username || 'admin';
 
       // Populate Crypto & Chunking Settings
-      if (setMasterKey) setMasterKey.value = settingsCache.master_key || '';
+      if (cryptoKeyInfo) {
+        const parts = [`Clave de cifrado activa: ${settingsCache.encryption_key_id || '?'}`];
+        if (settingsCache.chunks_needing_rekey > 0) {
+          parts.push(`${settingsCache.chunks_needing_rekey} fragmento(s) aún en formato antiguo: ejecuta "hf2s3 rekey" en el servidor.`);
+        } else {
+          parts.push('Todos los fragmentos usan el formato y la clave actuales.');
+        }
+        cryptoKeyInfo.textContent = parts.join(' ');
+      }
       if (setChunkSize) setChunkSize.value = String(settingsCache.chunk_size_mb || 32);
 
       // Populate HF Storage Cache settings
@@ -1231,6 +1287,7 @@ document.addEventListener('DOMContentLoaded', () => {
       };
       if (pass !== '') {
         payload.admin_password = pass;
+        payload.current_password = setAdminCurrentPass ? setAdminCurrentPass.value : '';
       }
 
       try {
@@ -1241,9 +1298,15 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         if (res.ok) {
           showToast('Credenciales de administrador actualizadas con éxito');
+          const changedPassword = pass !== '';
           setAdminPass.value = '';
           setAdminPassConfirm.value = '';
+          if (setAdminCurrentPass) setAdminCurrentPass.value = '';
           if (displayUsername) displayUsername.textContent = user;
+          if (changedPassword) {
+            showToast('Contraseña cambiada: vuelve a iniciar sesión');
+            showLoginOverlay();
+          }
           loadSettings();
         } else {
           const err = await res.json();
@@ -1260,7 +1323,6 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     const payload = {
       access_key_id: setAccessKey.value.trim(),
-      secret_access_key: setSecretKey.value.trim(),
       s3_region: setRegion.value.trim()
     };
     try {
@@ -1272,11 +1334,37 @@ document.addEventListener('DOMContentLoaded', () => {
       if (res.ok) {
         showToast('Credenciales S3 actualizadas exitosamente');
         loadSettings();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'No se pudieron guardar las credenciales', 'error');
       }
     } catch (e) {
       showToast('Error al guardar credenciales', 'error');
     }
   });
+
+  // Rotate the S3 secret: the new value is shown once and never stored in the page.
+  if (btnRotateS3Secret) {
+    btnRotateS3Secret.addEventListener('click', async () => {
+      if (!confirm('¿Generar un nuevo secreto S3? Los clientes con el secreto anterior dejarán de funcionar.')) return;
+      try {
+        const res = await fetch('/api/settings/rotate-s3-secret', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'No se pudo rotar el secreto', 'error');
+          return;
+        }
+        if (rotatedSecretOutput) {
+          rotatedSecretOutput.textContent = data.secret_access_key;
+          rotatedSecretBox.classList.remove('hidden');
+        }
+        showToast('Nuevo secreto generado. Guárdalo ahora: no volverá a mostrarse.');
+        loadSettings();
+      } catch (e) {
+        showToast('Error de comunicación con el gateway', 'error');
+      }
+    });
+  }
 
   // HF Storage Cache Form
   if (hfStorageForm) {
@@ -1308,49 +1396,20 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Crypto & Chunking Settings
-  if (btnToggleMasterKeyVisibility && setMasterKey) {
-    btnToggleMasterKeyVisibility.addEventListener('click', () => {
-      if (setMasterKey.type === 'password') {
-        setMasterKey.type = 'text';
-        btnToggleMasterKeyVisibility.textContent = 'Ocultar';
-      } else {
-        setMasterKey.type = 'password';
-        btnToggleMasterKeyVisibility.textContent = 'Mostrar';
-      }
-    });
-  }
-
-  if (btnGenerateMasterKey && setMasterKey) {
-    btnGenerateMasterKey.addEventListener('click', () => {
-      const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+';
-      const array = new Uint8Array(32);
-      window.crypto.getRandomValues(array);
-      let key = '';
-      for (let i = 0; i < array.length; i++) {
-        key += charset[array[i] % charset.length];
-      }
-      setMasterKey.value = key;
-      setMasterKey.type = 'text';
-      if (btnToggleMasterKeyVisibility) btnToggleMasterKeyVisibility.textContent = 'Ocultar';
-      showToast('Nueva clave maestra aleatoria generada (asegúrate de guardarla)');
-    });
-  }
-
+  // Chunking settings (the encryption master key is configured on the server, never here)
   if (formCrypto) {
     formCrypto.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const master_key = setMasterKey.value.trim();
       const chunk_size_mb = parseInt(setChunkSize.value, 10);
-      if (!master_key) {
-        showToast('La clave maestra no puede estar vacía', 'error');
+      if (!chunk_size_mb || chunk_size_mb < 1) {
+        showToast('El tamaño de fragmento debe ser un número positivo', 'error');
         return;
       }
       try {
         const res = await fetch('/api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ master_key, chunk_size_mb })
+          body: JSON.stringify({ chunk_size_mb })
         });
         if (res.ok) {
           showToast('Parámetros criptográficos y de fragmentación actualizados');
@@ -1361,62 +1420,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } catch (err) {
         showToast('Error de comunicación con el gateway', 'error');
-      }
-    });
-  }
-
-  // Database Restore Handlers
-  if (btnChooseBackupFile && restoreBackupInput) {
-    btnChooseBackupFile.addEventListener('click', () => {
-      restoreBackupInput.click();
-    });
-    restoreBackupInput.addEventListener('change', () => {
-      if (restoreBackupInput.files.length > 0) {
-        const file = restoreBackupInput.files[0];
-        restoreBackupFileName.textContent = `${file.name} (${formatBytes(file.size)})`;
-        btnSubmitRestore.disabled = false;
-      } else {
-        restoreBackupFileName.textContent = 'Ningún archivo seleccionado';
-        btnSubmitRestore.disabled = true;
-      }
-    });
-  }
-
-  if (formRestoreBackup) {
-    formRestoreBackup.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (!restoreBackupInput.files || restoreBackupInput.files.length === 0) return;
-      const file = restoreBackupInput.files[0];
-      if (!confirm(`¿Restaurar la base de datos desde "${file.name}"? La configuración y metadatos actuales serán reemplazados.`)) {
-        return;
-      }
-
-      btnSubmitRestore.disabled = true;
-      btnSubmitRestore.textContent = 'Restaurando...';
-      showToast('Importando base de datos SQLite...');
-
-      const formData = new FormData();
-      formData.append('database', file);
-
-      try {
-        const res = await fetch('/api/admin/restore', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          showToast(data.error || 'Fallo en la restauración', 'error');
-        } else {
-          showToast('¡Base de datos restaurada exitosamente! Actualizando interfaz...');
-          restoreBackupInput.value = '';
-          restoreBackupFileName.textContent = 'Ningún archivo seleccionado';
-          loadAllData();
-        }
-      } catch (err) {
-        showToast('Error de comunicación con el gateway', 'error');
-      } finally {
-        btnSubmitRestore.disabled = false;
-        btnSubmitRestore.textContent = 'Restaurar Base de Datos';
       }
     });
   }
@@ -1444,9 +1447,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Backup Download Handler
   if (btnDownloadBackup) {
     btnDownloadBackup.addEventListener('click', () => {
-      const token = localStorage.getItem('hf2s3_admin_token') || '';
       showToast('Generando respaldo íntegro de base de datos...');
-      window.location.href = `/api/admin/backup?token=${encodeURIComponent(token)}`;
+      window.location.href = '/api/admin/backup';
     });
   }
 
@@ -1487,7 +1489,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const data = await res.json();
-        localStorage.setItem('hf2s3_admin_token', data.token);
+        loginPass.value = '';
         if (displayUsername) displayUsername.textContent = data.username || 'admin';
         hideLoginOverlay();
         showToast('Sesión de administrador iniciada', 'success');
@@ -1506,7 +1508,6 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         await fetch('/api/auth/logout', { method: 'POST' });
       } catch (e) {}
-      localStorage.removeItem('hf2s3_admin_token');
       showLoginOverlay();
       showToast('Sesión cerrada');
     });

@@ -36,3 +36,8 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# Database snapshots and restore leftovers
+backups/
+*.pre-restore
+*.enc

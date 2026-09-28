@@ -91,16 +91,19 @@ type Chunk struct {
 	AccountID       int64     `json:"account_id"`
 	RemotePath      string    `json:"remote_path"`
 	Sha256Hash      string    `json:"sha256_hash"`
+	EncVersion      int       `json:"enc_version"`
+	KeyID           string    `json:"key_id"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
 type MultipartUpload struct {
-	ID          int64     `json:"id"`
-	UploadID    string    `json:"upload_id"`
-	Bucket      string    `json:"bucket"`
-	Key         string    `json:"key"`
-	ContentType string    `json:"content_type"`
-	InitiatedAt time.Time `json:"initiated_at"`
+	ID          int64             `json:"id"`
+	UploadID    string            `json:"upload_id"`
+	Bucket      string            `json:"bucket"`
+	Key         string            `json:"key"`
+	ContentType string            `json:"content_type"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	InitiatedAt time.Time         `json:"initiated_at"`
 }
 
 type MultipartPart struct {
@@ -127,17 +130,38 @@ type PoolStats struct {
 	ActiveCacheBuckets      int   `json:"active_cache_buckets"`
 	TotalCacheCapacityBytes int64 `json:"total_cache_capacity_bytes"`
 	TotalCacheUsedBytes     int64 `json:"total_cache_used_bytes"`
+	PendingDeletions        int   `json:"pending_deletions"`
+	ChunksNeedingRekey      int64 `json:"chunks_needing_rekey"`
 }
 
 type SystemSettings struct {
-	AccessKeyID       string `json:"access_key_id"`
-	SecretAccessKey   string `json:"secret_access_key"`
-	MasterKey         string `json:"master_key"`
-	ChunkSizeMB       int    `json:"chunk_size_mb"`
-	S3Region          string `json:"s3_region"`
-	HFStorageEndpoint string `json:"hf_storage_endpoint"`
-	HFStorageRegion   string `json:"hf_storage_region"`
+	AccessKeyID        string `json:"access_key_id"`
+	SecretAccessKey    string `json:"secret_access_key"`
+	ChunkSizeMB        int    `json:"chunk_size_mb"`
+	S3Region           string `json:"s3_region"`
+	HFStorageEndpoint  string `json:"hf_storage_endpoint"`
+	HFStorageRegion    string `json:"hf_storage_region"`
 	HFStorageAccessKey string `json:"hf_storage_access_key"`
 	HFStorageSecretKey string `json:"hf_storage_secret_key"`
-	HFStorageBucket   string `json:"hf_storage_bucket"`
+	HFStorageBucket    string `json:"hf_storage_bucket"`
+}
+
+// Kinds of remote objects queued for deletion.
+const (
+	DeletionChunk = "chunk" // encrypted chunk in a Hugging Face dataset (account_id = accounts.id)
+	DeletionCache = "cache" // unencrypted copy in a cache bucket (account_id = cache_buckets.id, 0 = legacy default)
+)
+
+// PendingDeletion is a remote object that must be removed. Rows survive
+// restarts and are retried with backoff, so failed deletes never leak storage.
+type PendingDeletion struct {
+	ID            int64     `json:"id"`
+	Kind          string    `json:"kind"`
+	AccountID     int64     `json:"account_id"`
+	RemotePath    string    `json:"remote_path"`
+	SizeBytes     int64     `json:"size_bytes"`
+	Attempts      int       `json:"attempts"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+	LastError     string    `json:"last_error"`
+	CreatedAt     time.Time `json:"created_at"`
 }

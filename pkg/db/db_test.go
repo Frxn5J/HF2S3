@@ -423,5 +423,3 @@ func TestCacheBucketsCRUD(t *testing.T) {
 		t.Errorf("Expected 1 bucket remaining after delete, got %d", len(allList))
 	}
 }
-
-
