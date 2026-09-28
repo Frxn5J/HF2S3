@@ -518,7 +518,36 @@
           <hr style="border:none;border-top:1px solid var(--border-subtle);margin:1.5rem 0;" />
 
           <h4>Restaurar desde un respaldo</h4>
-          <p style="font-size:0.82rem;color:var(--text-muted);margin:6px 0 14px;">La restauración se hace con el servicio detenido, para no sustituir la base de datos en uso: <code>hf2s3 restore respaldo.db</code> (valida la integridad y conserva el fichero anterior como <code>.pre-restore</code>).</p>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin:6px 0 14px;">Sube un respaldo (<code>.db</code>, o <code>.db.enc</code> si es la copia cifrada del bucket). Primero se <strong>valida por completo sin tocar nada</strong>; después revisas el resumen, confirmas con tu contraseña y el servicio se reinicia unos segundos para aplicarlo. La base actual se conserva en el servidor y, si la restaurada no arrancara, se vuelve sola a la anterior.</p>
+
+          <div id="restoreLastResult" class="backup-info-note hidden" style="margin-bottom:12px;"><p id="restoreLastResultText"></p></div>
+          <div id="restoreUnavailable" class="backup-info-note hidden"><p>La restauración desde el panel no está disponible en este despliegue. Usa <code>hf2s3 restore &lt;archivo&gt;</code> en el servidor.</p></div>
+
+          <form id="formRestoreUpload" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="restoreFileInput" accept=".db,.enc,application/x-sqlite3,application/octet-stream" style="display:none;" />
+            <button type="button" class="btn btn-secondary" id="btnChooseRestoreFile">Seleccionar archivo…</button>
+            <span id="restoreFileName" style="font-size:0.82rem;color:var(--text-dim);font-family:var(--font-mono);">Ningún archivo seleccionado</span>
+            <button type="submit" class="btn btn-primary" id="btnUploadRestore" disabled>Subir y validar</button>
+          </form>
+          <div class="progress-bar-wrap hidden" id="restoreUploadProgress" style="margin-top:10px;"><div class="progress-bar" id="restoreUploadBar" style="width:0%"></div></div>
+
+          <div id="restorePendingBox" class="backup-info-note hidden" style="margin-top:16px;">
+            <h4 style="margin-bottom:8px;">Copia validada, pendiente de confirmar</h4>
+            <p id="restorePendingFile" style="font-family:var(--font-mono);font-size:0.8rem;margin-bottom:8px;"></p>
+            <ul id="restoreSummaryList" style="margin:0 0 10px 18px;font-size:0.85rem;line-height:1.7;"></ul>
+            <ul id="restoreWarningList" style="margin:0 0 10px 18px;font-size:0.82rem;line-height:1.6;color:var(--accent-amber);"></ul>
+            <div class="form-group" style="max-width:320px;">
+              <label>Contraseña de administrador (confirmación)</label>
+              <input type="password" class="input-text" id="restoreConfirmPass" autocomplete="current-password" />
+            </div>
+            <div class="form-actions" style="display:flex;gap:10px;">
+              <button type="button" class="btn btn-danger" id="btnApplyRestore">Restaurar y reiniciar</button>
+              <button type="button" class="btn btn-secondary" id="btnCancelRestore">Cancelar</button>
+            </div>
+            <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">Se interrumpirán las subidas en curso y tendrás que volver a iniciar sesión.</p>
+          </div>
+
+          <div id="restoreRestartOverlay" class="backup-info-note hidden" style="margin-top:16px;"><p id="restoreRestartText">Reiniciando el servicio para aplicar la restauración…</p></div>
 
           <div class="backup-info-note" style="margin-top:1.25rem;">
             <p>El archivo descargado (<code>.db</code>) contiene todas las cuentas configuradas, buckets, objetos y la tabla de chunks cifrados. Si vas a alojar en <strong>Coolify</strong> o Docker, este archivo es autónomo y no requiere dependencias adicionales.</p>

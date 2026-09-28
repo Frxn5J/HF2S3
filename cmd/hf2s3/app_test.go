@@ -509,3 +509,7 @@ func TestMasterKeyRotation(t *testing.T) {
 		t.Fatalf("%d chunks still under the old key", n)
 	}
 }
+
+func newAccount() *models.Account {
+	return &models.Account{Name: "acc", Username: "me", Token: "hf_test_token_123456", RepoName: "me/vault", IsActive: true}
+}

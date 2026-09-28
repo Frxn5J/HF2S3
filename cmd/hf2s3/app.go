@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"hf2s3/pkg/backup"
 	"hf2s3/pkg/config"
@@ -41,6 +43,22 @@ type App struct {
 	// LegacyAdopted is true when a master key stored by an older release was
 	// moved (sealed) into the legacy key list during this start.
 	LegacyAdopted bool
+
+	restartCh   chan struct{}
+	restartOnce sync.Once
+	draining    atomic.Bool // set while shutting down to restart: new work gets 503
+}
+
+// ErrRestart is returned by Run when the process must be restarted (a database
+// restore was confirmed).
+var ErrRestart = errors.New("restart requested")
+
+// RequestRestart asks Run to drain, shut down and return ErrRestart.
+func (a *App) RequestRestart() {
+	a.restartOnce.Do(func() {
+		a.draining.Store(true)
+		close(a.restartCh)
+	})
 }
 
 // BootstrapOptions tune Bootstrap for commands that do not serve traffic.
@@ -362,11 +380,13 @@ func Bootstrap(ctx context.Context, cfg *config.Config, opts BootstrapOptions) (
 	}
 
 	ok = true
-	return &App{
+	app := &App{
 		Cfg: cfg, DB: database, Keyring: kr, HF: hf, Pool: pool, Settings: settings,
 		S3Auth: s3Auth, Admin: admin, S3: s3Server, Console: console, Backups: backups,
-		Metrics: metrics.New(), LegacyAdopted: adopted,
-	}, nil
+		Metrics: metrics.New(), LegacyAdopted: adopted, restartCh: make(chan struct{}),
+	}
+	console.SetRestoreManager(newRestoreManager(app))
+	return app, nil
 }
 
 func firstNonEmpty(vals ...string) string {

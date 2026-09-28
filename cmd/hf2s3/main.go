@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -109,13 +110,37 @@ func runServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// A restore confirmed in the console is applied here, before anything has the
+	// database open. On failure the current database stays in place.
+	applied, previous, rerr := applyPendingRestore(cfg.DBPath)
+	if rerr != nil {
+		slog.Error("could not apply the pending database restore; continuing with the current database", "err", rerr)
+	}
+
 	app, err := Bootstrap(ctx, cfg, BootstrapOptions{})
+	if err != nil && applied {
+		// The restored database passed validation but does not start: go back to the old one.
+		slog.Error("the restored database does not start; rolling back", "err", err)
+		if rb := rollbackRestore(cfg.DBPath, previous, err); rb != nil {
+			slog.Error("rollback failed", "err", rb)
+		} else {
+			app, err = Bootstrap(ctx, cfg, BootstrapOptions{})
+		}
+	}
 	if err != nil {
 		slog.Error("cannot start", "err", err)
 		fmt.Fprintf(os.Stderr, "\nhf2s3: %v\n", err)
 		os.Exit(1)
 	}
 	if err := app.Run(ctx); err != nil {
+		if errors.Is(err, ErrRestart) {
+			// Everything is closed; start over so the restored database is opened cleanly.
+			if rerr := reexec(); rerr != nil {
+				slog.Error("could not restart in place; exiting so the supervisor restarts the service", "err", rerr)
+				os.Exit(0)
+			}
+			return
+		}
 		os.Exit(1)
 	}
 }

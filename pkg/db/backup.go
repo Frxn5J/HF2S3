@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // BackupToFile writes a consistent, compacted snapshot of the live database to
@@ -81,26 +83,87 @@ func integrityCheck(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// BackupInfo describes a database file offered for restoration.
+type BackupInfo struct {
+	SchemaVersion int
+	Accounts      int64
+	Buckets       int64
+	Objects       int64
+	Chunks        int64
+	TotalBytes    int64
+	LatestObject  time.Time // zero when the backup holds no objects
+}
+
+// Reasons InspectBackup can refuse a file; callers translate them for users.
+var (
+	ErrNotHF2SDatabase = errors.New("the file is not an HF2S3 database")
+	ErrCorruptBackup   = errors.New("the database failed its integrity check")
+	ErrNewerSchema     = errors.New("the backup comes from a newer release")
+)
+
+// InspectBackup opens a database file read-only and verifies it is a healthy
+// HF2S3 database this binary can use: SQLite integrity, the expected tables, and
+// a schema version that is not newer than the binary supports. It never modifies
+// the file.
+func InspectBackup(ctx context.Context, path string) (*BackupInfo, error) {
+	src, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	if err != nil {
+		return nil, fmt.Errorf("open backup: %w", err)
+	}
+	defer src.Close()
+
+	var tables int
+	if err := src.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('accounts','buckets','objects','chunks')`).Scan(&tables); err != nil {
+		// "file is not a database" means the bytes are not SQLite at all; any other
+		// failure (malformed image, short read) means a damaged SQLite file.
+		if strings.Contains(err.Error(), "not a database") {
+			return nil, fmt.Errorf("%w: %v", ErrNotHF2SDatabase, err)
+		}
+		return nil, fmt.Errorf("%w: %v", ErrCorruptBackup, err)
+	}
+	if tables != 4 {
+		return nil, ErrNotHF2SDatabase
+	}
+	if err := integrityCheck(ctx, src); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCorruptBackup, err)
+	}
+
+	info := &BackupInfo{}
+	if err := src.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&info.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if info.SchemaVersion > SchemaVersion() {
+		return nil, fmt.Errorf("%w (schema %d, this binary supports up to %d)", ErrNewerSchema, info.SchemaVersion, SchemaVersion())
+	}
+
+	for query, dst := range map[string]*int64{
+		`SELECT COUNT(*) FROM accounts`:              &info.Accounts,
+		`SELECT COUNT(*) FROM buckets`:               &info.Buckets,
+		`SELECT COUNT(*) FROM objects`:               &info.Objects,
+		`SELECT COUNT(*) FROM chunks`:                &info.Chunks,
+		`SELECT COALESCE(SUM(size), 0) FROM objects`: &info.TotalBytes,
+	} {
+		if err := src.QueryRowContext(ctx, query).Scan(dst); err != nil {
+			return nil, err
+		}
+	}
+	var latest sql.NullTime
+	if err := src.QueryRowContext(ctx, `SELECT updated_at FROM objects ORDER BY updated_at DESC LIMIT 1`).Scan(&latest); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if latest.Valid {
+		info.LatestObject = latest.Time
+	}
+	return info, nil
+}
+
 // RestoreFile replaces the database at dstPath with the backup at srcPath. It
 // must run while the service is stopped: it validates the backup (integrity and
 // schema), keeps the current file as dstPath+".pre-restore", and removes stale
 // WAL/SHM files. Migrations are applied the next time the service opens it.
 func RestoreFile(ctx context.Context, srcPath, dstPath string) error {
-	src, err := sql.Open("sqlite", "file:"+filepath.ToSlash(srcPath)+"?mode=ro")
-	if err != nil {
-		return fmt.Errorf("open backup: %w", err)
-	}
-	var tables int
-	err = src.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('accounts','objects','chunks')`).Scan(&tables)
-	if err == nil {
-		err = integrityCheck(ctx, src)
-	}
-	_ = src.Close()
-	if err != nil {
+	if _, err := InspectBackup(ctx, srcPath); err != nil {
 		return fmt.Errorf("invalid backup: %w", err)
-	}
-	if tables != 3 {
-		return errors.New("invalid backup: not an HF2S3 database")
 	}
 
 	if _, err := os.Stat(dstPath); err == nil {
