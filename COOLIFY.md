@@ -64,23 +64,28 @@ volumes:
 
 ---
 
-## 2. Configuración de Variables de Entorno en Coolify
+## 2. Variables de Entorno en Coolify (Opcional)
 
-En la pestaña **Environment Variables** de tu aplicación en Coolify, define las siguientes variables:
+> [!TIP]
+> **Configuración en Vivo desde la Interfaz**:
+> No necesitas configurar variables de entorno obligatorias en Coolify. Toda la configuración (credenciales de administrador, credenciales S3, Hugging Face Storage Cache, clave maestra AES y chunks) se puede definir y modificar directamente desde la pestaña **Configuración** de la interfaz web y se guarda de forma persistente en `/data/hf2s3_metadata.db`.
+
+Si deseas establecer valores por defecto iniciales mediante Coolify (**Environment Variables**), puedes usar:
 
 | Variable | Valor de Ejemplo | Descripción |
 |---|---|---|
-| `ADMIN_USERNAME` | `admin` | Usuario para iniciar sesión en el panel web |
-| `ADMIN_PASSWORD` | `TuPasswordSeguro2026!` | Contraseña del panel web de administración |
-| `HF2S3_ACCESS_KEY` | `mi-access-key-prod` | S3 Access Key ID para tus clientes y backends |
-| `HF2S3_SECRET_KEY` | `mi-secret-key-muy-larga` | S3 Secret Access Key para autenticación S3 |
-| `HF2S3_MASTER_KEY` | `frase-maestra-aes-256-gcm` | Frase para cifrar los chunks en Hugging Face |
+| `ADMIN_USERNAME` | `admin` | Usuario inicial para el panel web |
+| `ADMIN_PASSWORD` | `TuPasswordSeguro2026!` | Contraseña inicial del panel web |
+| `HF2S3_ACCESS_KEY` | `mi-access-key-prod` | S3 Access Key ID inicial |
+| `HF2S3_SECRET_KEY` | `mi-secret-key-muy-larga` | S3 Secret Access Key inicial |
+| `HF2S3_MASTER_KEY` | `frase-maestra-aes-256-gcm` | Frase maestra inicial para cifrado AES-256 |
 | `HF2S3_DB` | `/data/hf2s3_metadata.db` | Ruta persistente de la base de datos SQLite |
 | `HF2S3_CHUNK_SIZE_MB` | `32` | Tamaño del chunk (32 MB recomendado) |
-| `HF2S3_REGION` | `us-east-1` | Región S3 informada |
-
-> [!WARNING]
-> **Importante:** Conserva tu `HF2S3_MASTER_KEY`. Si cambias esta frase en el futuro, no podrás descifrar los chunks previamente subidos a Hugging Face.
+| `HF2S3_REGION` | `us-east-1` | Región S3 reportada |
+| `HF_STORAGE_ENDPOINT` | `https://s3.hf.co` | Endpoint S3 de Hugging Face Storage |
+| `HF_STORAGE_ACCESS_KEY`| `HFAK...` | Access Key de Hugging Face Storage |
+| `HF_STORAGE_SECRET_KEY`| `...` | Secret Key de Hugging Face Storage |
+| `HF_STORAGE_BUCKET` | `mi-cache-multimedia` | Bucket de caché S3 en Hugging Face |
 
 ---
 

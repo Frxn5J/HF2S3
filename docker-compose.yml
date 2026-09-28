@@ -20,6 +20,11 @@ services:
       - HF2S3_MASTER_KEY=${HF2S3_MASTER_KEY:-hf2s3-aes-master-passphrase-2026}
       - HF2S3_CHUNK_SIZE_MB=${HF2S3_CHUNK_SIZE_MB:-32}
       - HF2S3_REGION=${HF2S3_REGION:-us-east-1}
+      - HF_STORAGE_ENDPOINT=${HF_STORAGE_ENDPOINT:-https://s3.hf.co}
+      - HF_STORAGE_REGION=${HF_STORAGE_REGION:-us-east-1}
+      - HF_STORAGE_ACCESS_KEY=${HF_STORAGE_ACCESS_KEY:-}
+      - HF_STORAGE_SECRET_KEY=${HF_STORAGE_SECRET_KEY:-}
+      - HF_STORAGE_BUCKET=${HF_STORAGE_BUCKET:-}
     volumes:
       - hf2s3_data:/data
     healthcheck:
