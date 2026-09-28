@@ -145,8 +145,15 @@ func (p *PoolManager) AcquireAccountExcluding(ctx context.Context, neededBytes i
 		inFlightCount := p.inFlightCounts[acc.ID]
 
 		effectiveUsage := acc.UsedBytes + currentInFlight
-		if effectiveUsage+neededBytes <= acc.QuotaBytes {
-			effectiveRatio := float64(effectiveUsage) / float64(acc.QuotaBytes)
+		hasSpace := acc.QuotaBytes <= 0 || (effectiveUsage+neededBytes <= acc.QuotaBytes)
+		if hasSpace {
+			var effectiveRatio float64
+			if acc.QuotaBytes > 0 {
+				effectiveRatio = float64(effectiveUsage) / float64(acc.QuotaBytes)
+			} else {
+				// Dynamic / unknown quota: balance chunks evenly across accounts by usage
+				effectiveRatio = float64(effectiveUsage) / float64(1024*1024*1024*1024)
+			}
 			isThrottled, _ := p.hfClient.IsThrottled(acc.Token)
 
 			if !isThrottled {

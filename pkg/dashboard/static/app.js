@@ -279,12 +279,19 @@ document.addEventListener('DOMContentLoaded', () => {
       metricUsedStorage.textContent = formatBytes(data.total_used_bytes);
       metricFreeStorage.textContent = formatBytes(data.total_free_bytes);
 
-      let pct = 0;
       if (data.total_capacity_bytes > 0) {
-        pct = ((data.total_used_bytes / data.total_capacity_bytes) * 100).toFixed(1);
+        const capGB = (data.total_capacity_bytes / (1024 * 1024 * 1024)).toFixed(1);
+        metricTotalCapacity.textContent = `${capGB} GB`;
+        metricFreeStorage.textContent = formatBytes(data.total_free_bytes);
+        let pct = ((data.total_used_bytes / data.total_capacity_bytes) * 100).toFixed(1);
+        metricStoragePercent.textContent = `${pct}% usado`;
+        poolProgressBar.style.width = `${Math.max(pct, 2)}%`;
+      } else {
+        metricTotalCapacity.textContent = 'Dinámica';
+        metricFreeStorage.textContent = 'Elástica';
+        metricStoragePercent.textContent = 'Capacidad elástica';
+        poolProgressBar.style.width = '100%';
       }
-      metricStoragePercent.textContent = `${pct}% usado`;
-      poolProgressBar.style.width = `${Math.max(pct, 2)}%`;
 
       metricActiveAccounts.textContent = `${data.active_accounts} / ${data.total_accounts}`;
       metricBucketsCount.textContent = data.total_buckets;
@@ -325,7 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
         overviewAccountsGrid.innerHTML = `
           <div class="account-card" style="grid-column: 1 / -1; text-align: center; padding: 30px;">
             <p style="color: var(--text-muted); margin-bottom: 12px;">No tienes cuentas de Hugging Face conectadas aún.</p>
-            <button class="btn btn-primary btn-sm" id="btnFirstAccount">+ Conectar Primera Cuenta (100 GB)</button>
+            <button class="btn btn-primary btn-sm" id="btnFirstAccount">+ Conectar Primera Cuenta (Dataset Público)</button>
           </div>
         `;
         document.getElementById('btnFirstAccount')?.addEventListener('click', () => {
@@ -333,26 +340,35 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       } else {
         accountsCache.forEach(acc => {
-          const usedPct = ((acc.used_bytes / acc.quota_bytes) * 100).toFixed(1);
+          const hasQuota = acc.quota_bytes > 0;
+          const usedPct = hasQuota ? ((acc.used_bytes / acc.quota_bytes) * 100).toFixed(1) : 0;
           const card = document.createElement('div');
           card.className = 'account-card';
           card.innerHTML = `
             <div class="account-card-header">
               <div>
                 <div class="account-user">${acc.name}</div>
-                <div class="account-repo">${acc.repo_name}</div>
+                <div class="account-repo" style="font-size:0.8rem;color:var(--text-muted);">
+                  <code>${acc.repo_name}</code>
+                  <span style="font-size:0.65rem;color:var(--accent-cyan);margin-left:4px;font-weight:600;">(PÚBLICO)</span>
+                </div>
               </div>
               <span class="${acc.is_active ? 'badge-active' : 'badge-inactive'}">
                 ${acc.is_active ? 'Activo' : 'Pausado'}
               </span>
             </div>
+            ${hasQuota ? `
             <div class="progress-bar-wrap">
               <div class="progress-bar" style="width: ${Math.max(usedPct, 2)}%"></div>
             </div>
             <div class="progress-stats">
               <span>${formatBytes(acc.used_bytes)} / ${formatBytes(acc.quota_bytes)}</span>
               <span>${usedPct}%</span>
-            </div>
+            </div>` : `
+            <div class="progress-stats" style="margin-top: 10px;">
+              <span>Almacenado: <strong>${formatBytes(acc.used_bytes)}</strong></span>
+              <span style="color: var(--accent-cyan); font-weight: 600;">Cuota Dinámica</span>
+            </div>`}
           `;
           overviewAccountsGrid.appendChild(card);
         });
@@ -365,14 +381,22 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         accountsCache.forEach(acc => {
           const tr = document.createElement('tr');
+          const quotaDisplay = acc.quota_bytes > 0 
+            ? formatBytes(acc.quota_bytes)
+            : `<span class="pill-badge" style="color:var(--accent-cyan);background:rgba(6,182,212,0.12);border:1px solid rgba(6,182,212,0.3);padding:2px 8px;border-radius:12px;font-size:0.75rem;font-weight:600;">Dinámica</span>`;
+          const quotaGBVal = acc.quota_bytes > 0 ? (acc.quota_bytes / (1024 * 1024 * 1024)).toFixed(0) : 0;
+
           tr.innerHTML = `
             <td>
               <strong>${acc.name}</strong><br/>
               <span style="font-size:0.75rem; color:var(--text-dim)">@${acc.username}</span>
             </td>
-            <td><code>${acc.repo_name}</code></td>
+            <td>
+              <code>${acc.repo_name}</code>
+              <span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(6,182,212,0.12);color:var(--accent-cyan);border:1px solid rgba(6,182,212,0.25);font-weight:600;margin-left:4px;">PÚBLICO</span>
+            </td>
             <td>${formatBytes(acc.used_bytes)}</td>
-            <td>${formatBytes(acc.quota_bytes)}</td>
+            <td>${quotaDisplay}</td>
             <td>
               <span class="${acc.is_active ? 'badge-active' : 'badge-inactive'}">
                 ${acc.is_active ? 'En Servicio' : 'Desactivado'}
@@ -380,6 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td>
               <button class="btn btn-xs btn-secondary btn-sync-acc" data-id="${acc.id}" title="Sincronizar uso">Sync</button>
+              <button class="btn btn-xs btn-outline btn-quota-acc" data-id="${acc.id}" data-quota="${quotaGBVal}" title="Ajustar cuota en GB (0 para Dinámica)">Cuota</button>
               <button class="btn btn-xs btn-outline btn-toggle-acc" data-id="${acc.id}">
                 ${acc.is_active ? 'Desactivar' : 'Activar'}
               </button>
@@ -390,6 +415,32 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Attach action handlers
+        document.querySelectorAll('.btn-quota-acc').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const id = btn.dataset.id;
+            const currentGB = btn.dataset.quota;
+            const input = prompt('Ingresa la cuota en GB para este dataset (0 para Dinámica / Elástica):', currentGB);
+            if (input === null) return;
+            const quotaGB = parseInt(input, 10);
+            if (isNaN(quotaGB) || quotaGB < 0) {
+              showToast('Cuota inválida', 'error');
+              return;
+            }
+            try {
+              await fetch(`/api/accounts/${id}/quota`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ quota_gb: quotaGB })
+              });
+              loadAccounts();
+              loadStats();
+              showToast(quotaGB === 0 ? 'Cuota establecida como Dinámica' : `Cuota actualizada a ${quotaGB} GB`);
+            } catch (e) {
+              showToast('Error al actualizar cuota', 'error');
+            }
+          });
+        });
+
         document.querySelectorAll('.btn-toggle-acc').forEach(btn => {
           btn.addEventListener('click', async () => {
             const id = btn.dataset.id;
@@ -432,7 +483,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const token = document.getElementById('hfTokenInput').value.trim();
     const name = document.getElementById('hfAccountNameInput').value.trim();
     const repo = document.getElementById('hfRepoNameInput').value.trim();
-    const quota = parseInt(document.getElementById('hfQuotaInput').value, 10);
+    const quota = parseInt(document.getElementById('hfQuotaInput').value, 10) || 0;
 
     btnSubmitAccount.disabled = true;
     btnSubmitAccount.innerHTML = '<span class="btn-text">Verificando en HF...</span>';
@@ -450,6 +501,8 @@ document.addEventListener('DOMContentLoaded', () => {
         showToast(`¡Cuenta @${data.username} conectada con éxito!`);
         modalAddAccount.classList.add('hidden');
         formAddAccount.reset();
+        document.getElementById('hfRepoNameInput').value = 'hf2s3-vault';
+        document.getElementById('hfQuotaInput').value = '0';
         loadAccounts();
         loadStats();
       }

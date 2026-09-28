@@ -172,12 +172,12 @@
       <section class="tab-pane" id="pane-accounts">
         <div class="pane-header-actions">
           <div>
-            <h3>Gestión de Cuentas Hugging Face</h3>
-            <p>Cada cuenta aporta hasta 100 GB en repositorios de datasets privados cifrados.</p>
+            <h3>Gestión de Cuentas Hugging Face (Datasets Públicos Cifrados)</h3>
+            <p>Almacenamiento masivo en repositorios de datasets públicos protegidos con cifrado en reposo AES-256-GCM (Zero-Knowledge). La capacidad es elástica y no está sujeta a límites fijos predeterminados.</p>
           </div>
           <button class="btn btn-primary" id="btnOpenAddAccountModal">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-            <span>Agregar Cuenta Hugging Face</span>
+            <span>+ Agregar Cuenta Hugging Face (Dataset)</span>
           </button>
         </div>
 
@@ -186,9 +186,9 @@
             <thead>
               <tr>
                 <th>Cuenta / Usuario</th>
-                <th>Repositorio Privado</th>
+                <th>Repositorio Público</th>
                 <th>Espacio Usado</th>
-                <th>Cuota Asignada</th>
+                <th>Capacidad / Cuota</th>
                 <th>Estado</th>
                 <th>Acciones</th>
               </tr>
@@ -528,7 +528,7 @@
   <div class="modal-overlay hidden" id="modalAddAccount">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Conectar Cuenta Hugging Face</h3>
+        <h3>Conectar Cuenta Hugging Face (Dataset Público Cifrado)</h3>
         <button class="modal-close" data-close="modalAddAccount">&times;</button>
       </div>
       <form id="formAddAccount">
@@ -542,13 +542,14 @@
           <input type="text" class="input-text" id="hfAccountNameInput" placeholder="Ej. HF Cuenta Personal" />
         </div>
         <div class="form-group">
-          <label>Nombre del Repositorio Dataset Privado</label>
+          <label>Nombre del Repositorio Dataset Público</label>
           <input type="text" class="input-text" id="hfRepoNameInput" value="hf2s3-vault" placeholder="hf2s3-vault" />
-          <span class="field-hint">Si el dataset no existe, HF2S3 lo creará automáticamente en modo <strong>privado</strong>.</span>
+          <span class="field-hint">El dataset se configurará en modo <strong>público</strong>. Todos los datos se fragmentan y cifran con <strong>AES-256-GCM</strong> (Zero-Knowledge) antes de subirse.</span>
         </div>
         <div class="form-group">
-          <label>Cuota Asignada (GB)</label>
-          <input type="number" class="input-text" id="hfQuotaInput" value="100" min="1" max="1000" />
+          <label>Capacidad / Cuota Estimada (GB) (Opcional)</label>
+          <input type="number" class="input-text" id="hfQuotaInput" value="0" min="0" placeholder="0 para cuota dinámica / elástica" />
+          <span class="field-hint">Los datasets públicos de Hugging Face tienen capacidad elástica. Deja en 0 para cuota <strong>dinámica</strong> (sin límite fijo).</span>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-secondary" data-close="modalAddAccount">Cancelar</button>

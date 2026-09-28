@@ -69,6 +69,7 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts", h.adminAuth.RequireAuth(h.handleCreateAccount))
 	mux.HandleFunc("POST /api/accounts/{id}/toggle", h.adminAuth.RequireAuth(h.handleToggleAccount))
 	mux.HandleFunc("POST /api/accounts/{id}/sync", h.adminAuth.RequireAuth(h.handleSyncAccount))
+	mux.HandleFunc("POST /api/accounts/{id}/quota", h.adminAuth.RequireAuth(h.handleUpdateAccountQuota))
 	mux.HandleFunc("DELETE /api/accounts/{id}", h.adminAuth.RequireAuth(h.handleDeleteAccount))
 
 	// Multi-Bucket S3 Cache endpoints
@@ -310,10 +311,10 @@ func (h *DashboardHandler) handleCreateAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Default quota allocation: 100 GB
-	quotaBytes := req.QuotaGB * 1024 * 1024 * 1024
-	if quotaBytes <= 0 {
-		quotaBytes = 100 * 1024 * 1024 * 1024
+	// Quota allocation: if req.QuotaGB <= 0, quota is 0 (dynamic/unknown for public datasets)
+	var quotaBytes int64
+	if req.QuotaGB > 0 {
+		quotaBytes = req.QuotaGB * 1024 * 1024 * 1024
 	}
 
 	name := strings.TrimSpace(req.Name)
@@ -401,6 +402,41 @@ func (h *DashboardHandler) handleDeleteAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	h.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (h *DashboardHandler) handleUpdateAccountQuota(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid account id")
+		return
+	}
+
+	var req struct {
+		QuotaGB int64 `json:"quota_gb"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+
+	var quotaBytes int64
+	if req.QuotaGB > 0 {
+		quotaBytes = req.QuotaGB * 1024 * 1024 * 1024
+	}
+
+	if err := h.pool.DB().UpdateAccountQuota(r.Context(), id, quotaBytes); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	acc, err := h.pool.DB().GetAccountByID(r.Context(), id)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, acc)
 }
 
 // --- Cache Buckets (Tier 1 S3 Cache) Handlers ---

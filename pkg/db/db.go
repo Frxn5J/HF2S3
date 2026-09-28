@@ -87,7 +87,7 @@ func (d *DB) migrate() error {
 		username TEXT NOT NULL,
 		token TEXT NOT NULL,
 		repo_name TEXT NOT NULL,
-		quota_bytes INTEGER NOT NULL DEFAULT 107374182400,
+		quota_bytes INTEGER NOT NULL DEFAULT 0,
 		used_bytes INTEGER NOT NULL DEFAULT 0,
 		is_active INTEGER NOT NULL DEFAULT 1,
 		last_checked DATETIME,
@@ -202,6 +202,7 @@ func (d *DB) migrate() error {
 	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_secret_key TEXT NOT NULL DEFAULT ''`)
 	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_endpoint TEXT NOT NULL DEFAULT ''`)
 	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_bucket TEXT NOT NULL DEFAULT ''`)
+	_, _ = d.db.Exec(`UPDATE accounts SET quota_bytes = 0 WHERE quota_bytes = 107374182400`)
 
 	return nil
 }
@@ -272,6 +273,19 @@ func (d *DB) IncrementAccountUsage(ctx context.Context, accountID int64, deltaBy
 	return err
 }
 
+func (d *DB) UpdateAccountQuota(ctx context.Context, accountID int64, quotaBytes int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE accounts
+		SET quota_bytes = ?, updated_at = ?
+		WHERE id = ?
+	`, quotaBytes, now, accountID)
+	return err
+}
+
 func (d *DB) DeleteAccount(ctx context.Context, accountID int64) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
@@ -325,7 +339,8 @@ func (d *DB) ListAccounts(ctx context.Context) ([]models.Account, error) {
 func (d *DB) ListActiveAccounts(ctx context.Context) ([]models.Account, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, name, username, token, repo_name, quota_bytes, used_bytes, is_active, last_checked, created_at, updated_at
-		FROM accounts WHERE is_active = 1 ORDER BY (used_bytes * 1.0 / quota_bytes) ASC
+		FROM accounts WHERE is_active = 1
+		ORDER BY CASE WHEN quota_bytes > 0 THEN (used_bytes * 1.0 / quota_bytes) ELSE 0 END ASC, used_bytes ASC
 	`)
 	if err != nil {
 		return nil, err
