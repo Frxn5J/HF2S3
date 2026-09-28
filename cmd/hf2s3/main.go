@@ -18,6 +18,7 @@ import (
 	"hf2s3/pkg/dashboard"
 	"hf2s3/pkg/db"
 	"hf2s3/pkg/hfclient"
+	"hf2s3/pkg/hfstorage"
 	"hf2s3/pkg/models"
 	"hf2s3/pkg/s3api"
 	"hf2s3/pkg/storage"
@@ -73,6 +74,13 @@ func main() {
 	regionFlag := flag.String("region", getEnv("HF2S3_REGION", "us-east-1"), "S3 Region name")
 	adminUserFlag := flag.String("admin-user", getEnv("ADMIN_USERNAME", getEnv("HF2S3_ADMIN_USER", "admin")), "Dashboard Admin Username")
 	adminPassFlag := flag.String("admin-pass", getEnv("ADMIN_PASSWORD", getEnv("HF2S3_ADMIN_PASS", "admin123")), "Dashboard Admin Password")
+
+	// Multi-Tier Cache (Hugging Face Storage Buckets s3.hf.co) flags
+	hfStorageEndpointFlag := flag.String("hf-storage-endpoint", getEnv("HF_STORAGE_ENDPOINT", "https://s3.hf.co"), "Hugging Face Storage Bucket S3 Endpoint")
+	hfStorageRegionFlag := flag.String("hf-storage-region", getEnv("HF_STORAGE_REGION", "us-east-1"), "Hugging Face Storage Bucket Region")
+	hfStorageAccessKeyFlag := flag.String("hf-storage-access-key", getEnv("HF_STORAGE_ACCESS_KEY", ""), "Hugging Face Storage Bucket S3 Access Key (HFAK...)")
+	hfStorageSecretKeyFlag := flag.String("hf-storage-secret-key", getEnv("HF_STORAGE_SECRET_KEY", ""), "Hugging Face Storage Bucket S3 Secret Key")
+	hfStorageBucketFlag := flag.String("hf-storage-bucket", getEnv("HF_STORAGE_BUCKET", ""), "Hugging Face Storage Bucket name for Tier 1 Cache")
 	flag.Parse()
 
 	// Environment variable overrides
@@ -85,7 +93,7 @@ func main() {
 		*dbFlag = dbEnv
 	}
 
-	log.Printf("[HF2S3] Starting Hugging Face Multi-Account S3/R2 Gateway...")
+	log.Printf("[HF2S3] Starting Hugging Face Multi-Tier S3/R2 Cloud Gateway...")
 
 	// Initialize SQLite metadata database
 	database, err := db.Open(*dbFlag)
@@ -95,7 +103,7 @@ func main() {
 	defer database.Close()
 	log.Printf("[HF2S3] SQLite metadata database ready: %s", *dbFlag)
 
-	// System credential persistence
+	// System credential persistence from SQLite
 	ctx := context.Background()
 	persistedAccessKey, err := database.GetSetting(ctx, "access_key_id")
 	if err == nil && persistedAccessKey != "" {
@@ -118,12 +126,62 @@ func main() {
 		_ = database.SetSetting(ctx, "s3_region", *regionFlag)
 	}
 
+	// Persisted Admin Web Console credentials
+	if val, err := database.GetSetting(ctx, "admin_username"); err == nil && val != "" {
+		*adminUserFlag = val
+	} else {
+		_ = database.SetSetting(ctx, "admin_username", *adminUserFlag)
+	}
+	if val, err := database.GetSetting(ctx, "admin_password"); err == nil && val != "" {
+		*adminPassFlag = val
+	} else {
+		_ = database.SetSetting(ctx, "admin_password", *adminPassFlag)
+	}
+
+	// Persisted AES Master Key
+	if val, err := database.GetSetting(ctx, "master_key"); err == nil && val != "" {
+		*masterKeyFlag = val
+	} else {
+		_ = database.SetSetting(ctx, "master_key", *masterKeyFlag)
+	}
+
+	// Persisted Chunk Size (MB)
+	if val, err := database.GetSetting(ctx, "chunk_size_mb"); err == nil && val != "" {
+		if cs, err := strconv.Atoi(val); err == nil && cs > 0 {
+			*chunkSizeFlag = cs
+		}
+	} else {
+		_ = database.SetSetting(ctx, "chunk_size_mb", strconv.Itoa(*chunkSizeFlag))
+	}
+
+	// Persisted multi-tier storage bucket cache settings
+	if val, err := database.GetSetting(ctx, "hf_storage_endpoint"); err == nil && val != "" {
+		*hfStorageEndpointFlag = val
+	}
+	if val, err := database.GetSetting(ctx, "hf_storage_region"); err == nil && val != "" {
+		*hfStorageRegionFlag = val
+	}
+	if val, err := database.GetSetting(ctx, "hf_storage_access_key"); err == nil && val != "" {
+		*hfStorageAccessKeyFlag = val
+	}
+	if val, err := database.GetSetting(ctx, "hf_storage_secret_key"); err == nil && val != "" {
+		*hfStorageSecretKeyFlag = val
+	}
+	if val, err := database.GetSetting(ctx, "hf_storage_bucket"); err == nil && val != "" {
+		*hfStorageBucketFlag = val
+	}
+
 	systemSettings := &models.SystemSettings{
-		AccessKeyID:     *accessKeyFlag,
-		SecretAccessKey: *secretKeyFlag,
-		MasterKey:       *masterKeyFlag,
-		ChunkSizeMB:     *chunkSizeFlag,
-		S3Region:        *regionFlag,
+		AccessKeyID:        *accessKeyFlag,
+		SecretAccessKey:    *secretKeyFlag,
+		MasterKey:          *masterKeyFlag,
+		ChunkSizeMB:        *chunkSizeFlag,
+		S3Region:           *regionFlag,
+		HFStorageEndpoint:  *hfStorageEndpointFlag,
+		HFStorageRegion:    *hfStorageRegionFlag,
+		HFStorageAccessKey: *hfStorageAccessKeyFlag,
+		HFStorageSecretKey: *hfStorageSecretKeyFlag,
+		HFStorageBucket:    *hfStorageBucketFlag,
 	}
 
 	// HF client and AES key derivation
@@ -134,6 +192,21 @@ func main() {
 	// Storage pool manager
 	pool := storage.NewPoolManager(database, hfClient, derivedKey, chunkBytes)
 
+	// Configure Tier 1 Cache (Hugging Face Storage Bucket S3 client)
+	cacheClient := hfstorage.NewS3Client(hfstorage.S3ClientConfig{
+		Endpoint:  *hfStorageEndpointFlag,
+		Region:    *hfStorageRegionFlag,
+		AccessKey: *hfStorageAccessKeyFlag,
+		SecretKey: *hfStorageSecretKeyFlag,
+		Bucket:    *hfStorageBucketFlag,
+	})
+	if cacheClient.IsConfigured() {
+		pool.SetCacheClient(cacheClient)
+		log.Printf("[HF2S3] Tier 1 Cache active: HF Storage Bucket '%s' at %s", *hfStorageBucketFlag, *hfStorageEndpointFlag)
+	} else {
+		log.Printf("[HF2S3] Tier 1 Cache is in standby (configure via HF_STORAGE_* or Web Console)")
+	}
+
 	// S3 REST API service
 	authManager := s3api.NewAuthManager(*accessKeyFlag, *secretKeyFlag)
 	s3Server := s3api.NewServer(pool, authManager)
@@ -141,6 +214,7 @@ func main() {
 	// Web dashboard with admin session management
 	adminAuth := dashboard.NewAdminAuthManager(*adminUserFlag, *adminPassFlag)
 	dashboardHandler := dashboard.NewDashboardHandler(pool, systemSettings, *portFlag, adminAuth)
+	dashboardHandler.SetCredentialsUpdater(authManager.UpdateCredentials)
 	dashMux := http.NewServeMux()
 	dashboardHandler.RegisterRoutes(dashMux)
 
@@ -188,18 +262,22 @@ func main() {
 
 	// Print startup information
 	stats, _ := database.GetStats(ctx)
-	fmt.Println("--- HF2S3: Hugging Face Multi-Account S3/R2 Cloud Gateway ---")
+	fmt.Println("--- HF2S3: Hugging Face Multi-Tier S3/R2 Cloud Gateway ---")
 	fmt.Printf(" [Web Dashboard]  http://localhost:%d\n", *portFlag)
 	fmt.Printf(" [S3 Endpoint]    http://localhost:%d\n", *portFlag)
+	fmt.Printf(" [Media Stream]   http://localhost:%d/media/{bucket}/{key}\n", *portFlag)
 	fmt.Printf(" [S3 Region]      %s\n", *regionFlag)
 	fmt.Printf(" [Access Key]     %s\n", *accessKeyFlag)
 	fmt.Printf(" [Secret Key]     %s\n", *secretKeyFlag)
-	fmt.Printf(" [Chunk Size]     %d MB\n", *chunkSizeFlag)
-	fmt.Printf(" [Encryption]     AES-256-GCM (Zero-Knowledge opaque blobs)\n")
-	fmt.Printf(" [Concurrency]    WAL SQLite + In-Flight Load Balancing + Prefetch Pipeline\n")
+	if cacheClient.IsConfigured() {
+		fmt.Printf(" [Tier 1 Cache]   HF Storage Bucket: %s (Direct-to-Client 302 Download)\n", *hfStorageBucketFlag)
+	} else {
+		fmt.Printf(" [Tier 1 Cache]   Standby (Configure HF Storage Bucket via Dashboard)\n")
+	}
+	fmt.Printf(" [Tier 2 Cold]    Public Datasets Hub (AES-256-GCM Encrypted Master Copy)\n")
 	fmt.Printf(" [Admin Login]    User: %s (Configured via ADMIN_USERNAME / ADMIN_PASSWORD)\n", *adminUserFlag)
 	if stats != nil {
-		fmt.Printf(" [Total Storage]  %.2f GB across %d account(s)\n", float64(stats.TotalCapacityBytes)/(1024*1024*1024), stats.TotalAccounts)
+		fmt.Printf(" [Storage Stats]  %d object(s) [%d in cache, %d in cold]\n", stats.TotalObjects, stats.CachedObjects, stats.ColdObjects)
 	}
 	fmt.Println("=================================================================")
 

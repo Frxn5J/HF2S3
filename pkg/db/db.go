@@ -155,11 +155,38 @@ func (d *DB) migrate() error {
 		value TEXT NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS object_locations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		object_id INTEGER NOT NULL,
+		tier TEXT NOT NULL,
+		account_id INTEGER NOT NULL DEFAULT 0,
+		remote_path TEXT NOT NULL,
+		is_encrypted INTEGER NOT NULL DEFAULT 0,
+		size_bytes INTEGER NOT NULL DEFAULT 0,
+		access_count INTEGER NOT NULL DEFAULT 0,
+		last_accessed_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL,
+		FOREIGN KEY (object_id) REFERENCES objects(id) ON DELETE CASCADE,
+		UNIQUE(object_id, tier, remote_path)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_objects_bucket_key ON objects(bucket, key);
 	CREATE INDEX IF NOT EXISTS idx_chunks_object_id ON chunks(object_id);
+	CREATE INDEX IF NOT EXISTS idx_obj_loc_tier ON object_locations(object_id, tier);
+	CREATE INDEX IF NOT EXISTS idx_obj_loc_lru ON object_locations(tier, last_accessed_at);
 	`
-	_, err := d.db.Exec(schema)
-	return err
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Safe column additions for accounts table
+	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1`)
+	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_access_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_secret_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_endpoint TEXT NOT NULL DEFAULT ''`)
+	_, _ = d.db.Exec(`ALTER TABLE accounts ADD COLUMN s3_bucket TEXT NOT NULL DEFAULT ''`)
+
+	return nil
 }
 
 // --- Accounts Operations ---
@@ -377,6 +404,10 @@ func (d *DB) ListBuckets(ctx context.Context) ([]models.Bucket, error) {
 // --- Objects & Chunks Operations ---
 
 func (d *DB) SaveObjectWithChunks(ctx context.Context, obj *models.Object, chunks []models.Chunk) error {
+	return d.SaveObjectWithChunksAndLocations(ctx, obj, chunks, nil)
+}
+
+func (d *DB) SaveObjectWithChunksAndLocations(ctx context.Context, obj *models.Object, chunks []models.Chunk, locations []models.ObjectLocation) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 
@@ -396,11 +427,14 @@ func (d *DB) SaveObjectWithChunks(ctx context.Context, obj *models.Object, chunk
 		customMetaStr = string(metaBytes)
 	}
 
-	// Delete old object chunks if object previously existed
+	// Delete old object chunks and locations if object previously existed
 	var existingID int64
 	err = tx.QueryRowContext(ctx, `SELECT id FROM objects WHERE bucket = ? AND key = ?`, obj.Bucket, obj.Key).Scan(&existingID)
 	if err == nil {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM chunks WHERE object_id = ?`, existingID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM object_locations WHERE object_id = ?`, existingID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM objects WHERE id = ?`, existingID); err != nil {
@@ -432,6 +466,36 @@ func (d *DB) SaveObjectWithChunks(ctx context.Context, obj *models.Object, chunk
 		if err != nil {
 			return err
 		}
+	}
+
+	for i := range locations {
+		loc := &locations[i]
+		loc.ObjectID = objID
+		if loc.CreatedAt.IsZero() {
+			loc.CreatedAt = now
+		}
+		if loc.LastAccessedAt.IsZero() {
+			loc.LastAccessedAt = now
+		}
+		isEnc := 0
+		if loc.IsEncrypted {
+			isEnc = 1
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO object_locations (object_id, tier, account_id, remote_path, is_encrypted, size_bytes, access_count, last_accessed_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, objID, string(loc.Tier), loc.AccountID, loc.RemotePath, isEnc, loc.SizeBytes, loc.AccessCount, loc.LastAccessedAt, loc.CreatedAt)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Fallback: If no explicit cold location but chunks exist, add a cold location representation
+	if len(locations) == 0 && len(chunks) > 0 {
+		_, _ = tx.ExecContext(ctx, `
+			INSERT INTO object_locations (object_id, tier, account_id, remote_path, is_encrypted, size_bytes, access_count, last_accessed_at, created_at)
+			VALUES (?, ?, ?, ?, 1, ?, 0, ?, ?)
+		`, objID, string(models.TierCold), chunks[0].AccountID, chunks[0].RemotePath, obj.Size, now, now)
 	}
 
 	return tx.Commit()
@@ -476,6 +540,8 @@ func (d *DB) GetObjectWithChunks(ctx context.Context, bucket, key string) (*mode
 		chunks = append(chunks, c)
 	}
 
+	_ = d.PopulateObjectTiers(ctx, &obj)
+
 	return &obj, chunks, rows.Err()
 }
 
@@ -499,6 +565,8 @@ func (d *DB) HeadObject(ctx context.Context, bucket, key string) (*models.Object
 	if customMetaStr.Valid && customMetaStr.String != "" {
 		_ = json.Unmarshal([]byte(customMetaStr.String), &obj.CustomMetadata)
 	}
+
+	_ = d.PopulateObjectTiers(ctx, &obj)
 
 	return &obj, nil
 }
@@ -544,6 +612,9 @@ func (d *DB) DeleteObject(ctx context.Context, bucket, key string) ([]models.Chu
 	if _, err := tx.ExecContext(ctx, `DELETE FROM chunks WHERE object_id = ?`, objID); err != nil {
 		return nil, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM object_locations WHERE object_id = ?`, objID); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM objects WHERE id = ?`, objID); err != nil {
 		return nil, err
 	}
@@ -576,9 +647,171 @@ func (d *DB) ListObjects(ctx context.Context, bucket, prefix, startAfter string,
 		if customMetaStr.Valid && customMetaStr.String != "" {
 			_ = json.Unmarshal([]byte(customMetaStr.String), &obj.CustomMetadata)
 		}
+		_ = d.PopulateObjectTiers(ctx, &obj)
 		objects = append(objects, obj)
 	}
 	return objects, rows.Err()
+}
+
+// --- Multi-Tier Object Locations ---
+
+func (d *DB) SaveObjectLocation(ctx context.Context, loc *models.ObjectLocation) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	if loc.CreatedAt.IsZero() {
+		loc.CreatedAt = now
+	}
+	if loc.LastAccessedAt.IsZero() {
+		loc.LastAccessedAt = now
+	}
+	isEnc := 0
+	if loc.IsEncrypted {
+		isEnc = 1
+	}
+
+	res, err := d.db.ExecContext(ctx, `
+		INSERT INTO object_locations (object_id, tier, account_id, remote_path, is_encrypted, size_bytes, access_count, last_accessed_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(object_id, tier, remote_path) DO UPDATE SET
+			size_bytes = excluded.size_bytes,
+			last_accessed_at = excluded.last_accessed_at,
+			access_count = object_locations.access_count + 1
+	`, loc.ObjectID, string(loc.Tier), loc.AccountID, loc.RemotePath, isEnc, loc.SizeBytes, loc.AccessCount, loc.LastAccessedAt, loc.CreatedAt)
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err == nil && id > 0 {
+		loc.ID = id
+	}
+	return nil
+}
+
+func (d *DB) GetObjectLocations(ctx context.Context, objectID int64) ([]models.ObjectLocation, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, object_id, tier, account_id, remote_path, is_encrypted, size_bytes, access_count, last_accessed_at, created_at
+		FROM object_locations WHERE object_id = ? ORDER BY id ASC
+	`, objectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var locs []models.ObjectLocation
+	for rows.Next() {
+		var l models.ObjectLocation
+		var tierStr string
+		var isEnc int
+		if err := rows.Scan(&l.ID, &l.ObjectID, &tierStr, &l.AccountID, &l.RemotePath, &isEnc, &l.SizeBytes, &l.AccessCount, &l.LastAccessedAt, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		l.Tier = models.TierType(tierStr)
+		l.IsEncrypted = isEnc == 1
+		locs = append(locs, l)
+	}
+	return locs, rows.Err()
+}
+
+func (d *DB) GetObjectLocationByTier(ctx context.Context, objectID int64, tier models.TierType) (*models.ObjectLocation, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, object_id, tier, account_id, remote_path, is_encrypted, size_bytes, access_count, last_accessed_at, created_at
+		FROM object_locations WHERE object_id = ? AND tier = ? LIMIT 1
+	`, objectID, string(tier))
+
+	var l models.ObjectLocation
+	var tierStr string
+	var isEnc int
+	err := row.Scan(&l.ID, &l.ObjectID, &tierStr, &l.AccountID, &l.RemotePath, &isEnc, &l.SizeBytes, &l.AccessCount, &l.LastAccessedAt, &l.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	l.Tier = models.TierType(tierStr)
+	l.IsEncrypted = isEnc == 1
+	return &l, nil
+}
+
+func (d *DB) DeleteObjectLocationByTier(ctx context.Context, objectID int64, tier models.TierType) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	_, err := d.db.ExecContext(ctx, `DELETE FROM object_locations WHERE object_id = ? AND tier = ?`, objectID, string(tier))
+	return err
+}
+
+func (d *DB) RecordLocationAccess(ctx context.Context, locationID int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	now := time.Now().UTC()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE object_locations
+		SET access_count = access_count + 1, last_accessed_at = ?
+		WHERE id = ?
+	`, now, locationID)
+	return err
+}
+
+func (d *DB) ListLRUCacheLocations(ctx context.Context, limit int) ([]models.ObjectLocation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, object_id, tier, account_id, remote_path, is_encrypted, size_bytes, access_count, last_accessed_at, created_at
+		FROM object_locations
+		WHERE tier = 'cache'
+		ORDER BY last_accessed_at ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var locs []models.ObjectLocation
+	for rows.Next() {
+		var l models.ObjectLocation
+		var tierStr string
+		var isEnc int
+		if err := rows.Scan(&l.ID, &l.ObjectID, &tierStr, &l.AccountID, &l.RemotePath, &isEnc, &l.SizeBytes, &l.AccessCount, &l.LastAccessedAt, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		l.Tier = models.TierType(tierStr)
+		l.IsEncrypted = isEnc == 1
+		locs = append(locs, l)
+	}
+	return locs, rows.Err()
+}
+
+func (d *DB) PopulateObjectTiers(ctx context.Context, obj *models.Object) error {
+	if obj == nil || obj.ID == 0 {
+		return nil
+	}
+	locs, err := d.GetObjectLocations(ctx, obj.ID)
+	if err != nil {
+		return err
+	}
+	obj.Locations = locs
+	for _, l := range locs {
+		if l.Tier == models.TierCache {
+			obj.HasCache = true
+		}
+		if l.Tier == models.TierCold {
+			obj.HasCold = true
+		}
+	}
+	if !obj.HasCold {
+		var chunkCount int
+		_ = d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chunks WHERE object_id = ?`, obj.ID).Scan(&chunkCount)
+		if chunkCount > 0 {
+			obj.HasCold = true
+		}
+	}
+	return nil
 }
 
 // --- Multipart Uploads ---
@@ -709,6 +942,13 @@ func (d *DB) GetStats(ctx context.Context) (*models.PoolStats, error) {
 
 	// Objects count
 	_ = d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM objects`).Scan(&stats.TotalObjects)
+
+	// Cached vs Cold objects count
+	_ = d.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT object_id) FROM object_locations WHERE tier = 'cache'`).Scan(&stats.CachedObjects)
+	_ = d.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT object_id) FROM object_locations WHERE tier = 'cold'`).Scan(&stats.ColdObjects)
+	if stats.ColdObjects == 0 && stats.TotalObjects > 0 {
+		stats.ColdObjects = stats.TotalObjects
+	}
 
 	return &stats, nil
 }

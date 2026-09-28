@@ -101,11 +101,41 @@ document.addEventListener('DOMContentLoaded', () => {
   const snippetCodeDisplay = document.getElementById('snippetCodeDisplay');
   const btnCopySnippet = document.getElementById('btnCopySnippet');
 
-  // Settings Tab
+  // Settings Tab - S3 Credentials
   const settingsForm = document.getElementById('settingsForm');
   const setAccessKey = document.getElementById('setAccessKey');
   const setSecretKey = document.getElementById('setSecretKey');
   const setRegion = document.getElementById('setRegion');
+
+  // Settings Tab - Admin Credentials Elements
+  const formAdminAuth = document.getElementById('formAdminAuth');
+  const setAdminUser = document.getElementById('setAdminUser');
+  const setAdminPass = document.getElementById('setAdminPass');
+  const setAdminPassConfirm = document.getElementById('setAdminPassConfirm');
+  const settingsCurrentAdminBadge = document.getElementById('settingsCurrentAdminBadge');
+
+  // Settings Tab - Crypto & Chunk Settings Elements
+  const formCrypto = document.getElementById('formCrypto');
+  const setMasterKey = document.getElementById('setMasterKey');
+  const btnToggleMasterKeyVisibility = document.getElementById('btnToggleMasterKeyVisibility');
+  const btnGenerateMasterKey = document.getElementById('btnGenerateMasterKey');
+  const setChunkSize = document.getElementById('setChunkSize');
+
+  // Settings Tab - HF Storage Cache Settings Elements
+  const hfStorageForm = document.getElementById('hfStorageForm');
+  const setHFStorageEndpoint = document.getElementById('setHFStorageEndpoint');
+  const setHFStorageRegion = document.getElementById('setHFStorageRegion');
+  const setHFStorageAccessKey = document.getElementById('setHFStorageAccessKey');
+  const setHFStorageSecretKey = document.getElementById('setHFStorageSecretKey');
+  const setHFStorageBucket = document.getElementById('setHFStorageBucket');
+  const hfStorageStatusBadge = document.getElementById('hfStorageStatusBadge');
+
+  // Settings Tab - Database Backup & Restore Elements
+  const formRestoreBackup = document.getElementById('formRestoreBackup');
+  const restoreBackupInput = document.getElementById('restoreBackupInput');
+  const btnChooseBackupFile = document.getElementById('btnChooseBackupFile');
+  const restoreBackupFileName = document.getElementById('restoreBackupFileName');
+  const btnSubmitRestore = document.getElementById('btnSubmitRestore');
 
   // Tab Titles
   const tabMetadata = {
@@ -504,11 +534,30 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderFiles(files) {
     filesTableBody.innerHTML = '';
     if (!files || files.length === 0) {
-      filesTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">Este bucket no contiene archivos aún. Sube uno arrastrándolo arriba.</td></tr>';
+      filesTableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Este bucket no contiene archivos aún. Sube uno arrastrándolo arriba.</td></tr>';
       return;
     }
 
     files.forEach(f => {
+      let tierBadges = '<span class="tier-badge tier-none">Sin Ubicación</span>';
+      if (f.has_cache || f.has_cold) {
+        tierBadges = '<div class="tier-badges-wrap">';
+        if (f.has_cache) {
+          tierBadges += '<span class="tier-badge tier-cache" title="En Caché HF Storage S3 (Descarga Directa 302)">⚡ Caché S3</span>';
+        }
+        if (f.has_cold) {
+          tierBadges += '<span class="tier-badge tier-cold" title="Original Cifrado en Dataset Hub">❄️ Dataset Público</span>';
+        }
+        tierBadges += '</div>';
+      }
+
+      let cacheActionBtn = '';
+      if (f.has_cache) {
+        cacheActionBtn = `<button class="btn btn-xs btn-outline btn-evict-file" data-key="${f.key}" title="Desalojar copia de la caché S3 (el original cifrado se preserva en dataset)">Desalojar</button>`;
+      } else if (f.has_cold) {
+        cacheActionBtn = `<button class="btn btn-xs btn-outline btn-promote-file" data-key="${f.key}" title="Promover copia sin cifrar a la caché S3">Promover</button>`;
+      }
+
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>
@@ -518,12 +567,15 @@ document.addEventListener('DOMContentLoaded', () => {
           </span>
         </td>
         <td>${formatBytes(f.size)}</td>
-        <td><code style="font-size:0.75rem">${f.etag.replace(/"/g, '')}</code></td>
+        <td>${tierBadges}</td>
+        <td><code style="font-size:0.75rem">${(f.etag || '').replace(/"/g, '')}</code></td>
         <td><span style="font-size:0.75rem;color:var(--text-dim)">${f.content_type || 'binary'}</span></td>
         <td><span style="font-size:0.78rem">${new Date(f.updated_at).toLocaleString()}</span></td>
         <td>
+          <a href="/media/${encodeURIComponent(activeBucket)}/${encodeURIComponent(f.key)}" target="_blank" class="btn btn-xs btn-outline btn-stream" title="Descarga Directa o Streaming Multimedia">Stream</a>
           <button class="btn btn-xs btn-secondary btn-dl-file" data-key="${f.key}">Descargar</button>
-          <button class="btn btn-xs btn-outline btn-inspect-file" data-key="${f.key}" title="Ver distribución en HF">Chunks</button>
+          ${cacheActionBtn}
+          <button class="btn btn-xs btn-outline btn-inspect-file" data-key="${f.key}" title="Ver distribución de chunks en HF">Chunks</button>
           <button class="btn btn-xs btn-danger btn-del-file" data-key="${f.key}">Borrar</button>
         </td>
       `;
@@ -552,6 +604,58 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.btn-inspect-file').forEach(btn => {
       btn.addEventListener('click', () => {
         inspectChunks(btn.dataset.key);
+      });
+    });
+
+    document.querySelectorAll('.btn-evict-file').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const key = btn.dataset.key;
+        if (!confirm(`¿Desalojar "${key}" de la Caché S3? El original cifrado en el dataset se mantendrá intacto.`)) return;
+        try {
+          const res = await fetch('/api/objects/evict-cache', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bucket: activeBucket, key })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showToast(data.error || 'Error al desalojar de caché', 'error');
+          } else {
+            showToast(`"${key}" desalojado de la caché S3`);
+            loadObjectsForBucket(activeBucket);
+          }
+        } catch (e) {
+          showToast('Error de comunicación con el gateway', 'error');
+        }
+      });
+    });
+
+    document.querySelectorAll('.btn-promote-file').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const key = btn.dataset.key;
+        btn.disabled = true;
+        btn.textContent = 'Promoviendo...';
+        showToast(`Promoviendo "${key}" a la caché S3...`);
+        try {
+          const res = await fetch('/api/objects/promote-cache', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bucket: activeBucket, key })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showToast(data.error || 'Error al promover a caché', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Promover';
+          } else {
+            showToast(`¡"${key}" promovido a la caché S3!`);
+            loadObjectsForBucket(activeBucket);
+          }
+        } catch (e) {
+          showToast('Error de comunicación con el gateway', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Promover';
+        }
       });
     });
   }
@@ -693,6 +797,30 @@ document.addEventListener('DOMContentLoaded', () => {
       setSecretKey.value = settingsCache.secret_access_key;
       setRegion.value = settingsCache.s3_region;
 
+      // Populate Admin Settings
+      if (setAdminUser) setAdminUser.value = settingsCache.admin_username || 'admin';
+      if (settingsCurrentAdminBadge) settingsCurrentAdminBadge.textContent = settingsCache.admin_username || 'admin';
+
+      // Populate Crypto & Chunking Settings
+      if (setMasterKey) setMasterKey.value = settingsCache.master_key || '';
+      if (setChunkSize) setChunkSize.value = String(settingsCache.chunk_size_mb || 32);
+
+      // Populate HF Storage Cache settings
+      if (setHFStorageEndpoint) setHFStorageEndpoint.value = settingsCache.hf_storage_endpoint || 'https://s3.hf.co';
+      if (setHFStorageRegion) setHFStorageRegion.value = settingsCache.hf_storage_region || 'us-east-1';
+      if (setHFStorageAccessKey) setHFStorageAccessKey.value = settingsCache.hf_storage_access_key || '';
+      if (setHFStorageBucket) setHFStorageBucket.value = settingsCache.hf_storage_bucket || '';
+
+      if (hfStorageStatusBadge) {
+        if (settingsCache.hf_storage_configured) {
+          hfStorageStatusBadge.className = 'badge-active';
+          hfStorageStatusBadge.textContent = '⚡ En Servicio (Direct SigV4 302)';
+        } else {
+          hfStorageStatusBadge.className = 'badge-inactive';
+          hfStorageStatusBadge.textContent = 'No Configurado';
+        }
+      }
+
       renderSnippet('rclone');
     } catch (e) {
       console.error('Failed to load settings', e);
@@ -718,6 +846,54 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast('Configuración copiada');
   });
 
+  // Admin Account Settings Form
+  if (formAdminAuth) {
+    formAdminAuth.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const user = setAdminUser.value.trim();
+      const pass = setAdminPass.value;
+      const passConfirm = setAdminPassConfirm.value;
+
+      if (!user) {
+        showToast('El usuario administrador no puede estar vacío', 'error');
+        return;
+      }
+
+      if (pass !== '' && pass !== passConfirm) {
+        showToast('Las contraseñas no coinciden', 'error');
+        return;
+      }
+
+      const payload = {
+        admin_username: user
+      };
+      if (pass !== '') {
+        payload.admin_password = pass;
+      }
+
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          showToast('Credenciales de administrador actualizadas con éxito');
+          setAdminPass.value = '';
+          setAdminPassConfirm.value = '';
+          if (displayUsername) displayUsername.textContent = user;
+          loadSettings();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Error al actualizar administrador', 'error');
+        }
+      } catch (err) {
+        showToast('Error de comunicación con el gateway', 'error');
+      }
+    });
+  }
+
+  // S3 Gateway Settings Form
   settingsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
@@ -732,13 +908,156 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify(payload)
       });
       if (res.ok) {
-        showToast('Credenciales actualizadas exitosamente');
+        showToast('Credenciales S3 actualizadas exitosamente');
         loadSettings();
       }
     } catch (e) {
       showToast('Error al guardar credenciales', 'error');
     }
   });
+
+  // HF Storage Cache Form
+  if (hfStorageForm) {
+    hfStorageForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        hf_storage_endpoint: setHFStorageEndpoint.value.trim(),
+        hf_storage_region: setHFStorageRegion.value.trim(),
+        hf_storage_access_key: setHFStorageAccessKey.value.trim(),
+        hf_storage_secret_key: setHFStorageSecretKey.value.trim(),
+        hf_storage_bucket: setHFStorageBucket.value.trim()
+      };
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          showToast('Configuración de Caché HF Storage guardada');
+          loadSettings();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Error al guardar configuración de caché', 'error');
+        }
+      } catch (e) {
+        showToast('Error de comunicación con el gateway', 'error');
+      }
+    });
+  }
+
+  // Crypto & Chunking Settings
+  if (btnToggleMasterKeyVisibility && setMasterKey) {
+    btnToggleMasterKeyVisibility.addEventListener('click', () => {
+      if (setMasterKey.type === 'password') {
+        setMasterKey.type = 'text';
+        btnToggleMasterKeyVisibility.textContent = 'Ocultar';
+      } else {
+        setMasterKey.type = 'password';
+        btnToggleMasterKeyVisibility.textContent = 'Mostrar';
+      }
+    });
+  }
+
+  if (btnGenerateMasterKey && setMasterKey) {
+    btnGenerateMasterKey.addEventListener('click', () => {
+      const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+';
+      const array = new Uint8Array(32);
+      window.crypto.getRandomValues(array);
+      let key = '';
+      for (let i = 0; i < array.length; i++) {
+        key += charset[array[i] % charset.length];
+      }
+      setMasterKey.value = key;
+      setMasterKey.type = 'text';
+      if (btnToggleMasterKeyVisibility) btnToggleMasterKeyVisibility.textContent = 'Ocultar';
+      showToast('Nueva clave maestra aleatoria generada (asegúrate de guardarla)');
+    });
+  }
+
+  if (formCrypto) {
+    formCrypto.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const master_key = setMasterKey.value.trim();
+      const chunk_size_mb = parseInt(setChunkSize.value, 10);
+      if (!master_key) {
+        showToast('La clave maestra no puede estar vacía', 'error');
+        return;
+      }
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ master_key, chunk_size_mb })
+        });
+        if (res.ok) {
+          showToast('Parámetros criptográficos y de fragmentación actualizados');
+          loadSettings();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Error al guardar parámetros de almacenamiento frío', 'error');
+        }
+      } catch (err) {
+        showToast('Error de comunicación con el gateway', 'error');
+      }
+    });
+  }
+
+  // Database Restore Handlers
+  if (btnChooseBackupFile && restoreBackupInput) {
+    btnChooseBackupFile.addEventListener('click', () => {
+      restoreBackupInput.click();
+    });
+    restoreBackupInput.addEventListener('change', () => {
+      if (restoreBackupInput.files.length > 0) {
+        const file = restoreBackupInput.files[0];
+        restoreBackupFileName.textContent = `${file.name} (${formatBytes(file.size)})`;
+        btnSubmitRestore.disabled = false;
+      } else {
+        restoreBackupFileName.textContent = 'Ningún archivo seleccionado';
+        btnSubmitRestore.disabled = true;
+      }
+    });
+  }
+
+  if (formRestoreBackup) {
+    formRestoreBackup.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!restoreBackupInput.files || restoreBackupInput.files.length === 0) return;
+      const file = restoreBackupInput.files[0];
+      if (!confirm(`¿Restaurar la base de datos desde "${file.name}"? La configuración y metadatos actuales serán reemplazados.`)) {
+        return;
+      }
+
+      btnSubmitRestore.disabled = true;
+      btnSubmitRestore.textContent = 'Restaurando...';
+      showToast('Importando base de datos SQLite...');
+
+      const formData = new FormData();
+      formData.append('database', file);
+
+      try {
+        const res = await fetch('/api/admin/restore', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'Fallo en la restauración', 'error');
+        } else {
+          showToast('¡Base de datos restaurada exitosamente! Actualizando interfaz...');
+          restoreBackupInput.value = '';
+          restoreBackupFileName.textContent = 'Ningún archivo seleccionado';
+          loadAllData();
+        }
+      } catch (err) {
+        showToast('Error de comunicación con el gateway', 'error');
+      } finally {
+        btnSubmitRestore.disabled = false;
+        btnSubmitRestore.textContent = 'Restaurar Base de Datos';
+      }
+    });
+  }
 
   // Global Refresh
   btnRefresh.addEventListener('click', () => {

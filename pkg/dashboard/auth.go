@@ -16,6 +16,7 @@ type SessionInfo struct {
 }
 
 type AdminAuthManager struct {
+	mu       sync.RWMutex
 	username string
 	password string
 	sessions sync.Map // token (string) -> SessionInfo
@@ -26,7 +27,7 @@ func NewAdminAuthManager(username, password string) *AdminAuthManager {
 		username = "admin"
 	}
 	if password == "" {
-		password = "admin"
+		password = "admin123"
 	}
 	return &AdminAuthManager{
 		username: username,
@@ -34,11 +35,32 @@ func NewAdminAuthManager(username, password string) *AdminAuthManager {
 	}
 }
 
+func (a *AdminAuthManager) SetCredentials(user, pass string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if strings.TrimSpace(user) != "" {
+		a.username = strings.TrimSpace(user)
+	}
+	if strings.TrimSpace(pass) != "" {
+		a.password = strings.TrimSpace(pass)
+	}
+}
+
+func (a *AdminAuthManager) GetUsername() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.username
+}
+
 func (a *AdminAuthManager) Login(user, pass string) (string, error) {
+	a.mu.RLock()
+	targetU := a.username
+	targetP := a.password
+	a.mu.RUnlock()
+
 	u := strings.TrimSpace(user)
-	targetU := strings.TrimSpace(a.username)
-	userMatch := subtle.ConstantTimeCompare([]byte(u), []byte(targetU)) == 1
-	passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(a.password)) == 1
+	userMatch := subtle.ConstantTimeCompare([]byte(u), []byte(strings.TrimSpace(targetU))) == 1
+	passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(targetP)) == 1
 
 	if !userMatch || !passMatch {
 		return "", http.ErrNoCookie // Invalid credentials

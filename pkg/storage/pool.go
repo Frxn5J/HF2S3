@@ -18,6 +18,7 @@ import (
 	"hf2s3/pkg/crypto"
 	"hf2s3/pkg/db"
 	"hf2s3/pkg/hfclient"
+	"hf2s3/pkg/hfstorage"
 	"hf2s3/pkg/models"
 )
 
@@ -35,6 +36,7 @@ type ByteRange struct {
 type PoolManager struct {
 	db             *db.DB
 	hfClient       *hfclient.Client
+	cacheClient    *hfstorage.S3Client
 	masterKey      []byte
 	chunkSizeBytes int64
 
@@ -82,6 +84,26 @@ func (p *PoolManager) putBuffer(b []byte) {
 		slice := b[:p.chunkSizeBytes]
 		p.bufferPool.Put(&slice)
 	}
+}
+
+func (p *PoolManager) SetMasterKey(key []byte) {
+	if len(key) > 0 {
+		p.masterKey = key
+	}
+}
+
+func (p *PoolManager) SetChunkSize(chunkSizeBytes int64) {
+	if chunkSizeBytes > 0 {
+		p.chunkSizeBytes = chunkSizeBytes
+	}
+}
+
+func (p *PoolManager) MasterKey() []byte {
+	return p.masterKey
+}
+
+func (p *PoolManager) ChunkSizeBytes() int64 {
+	return p.chunkSizeBytes
 }
 
 // AcquireAccountForChunk selects the least loaded account taking into account both stored and in-flight bytes.
@@ -342,6 +364,15 @@ func (p *PoolManager) PutObject(ctx context.Context, bucket, key, contentType st
 		return nil, fmt.Errorf("save object metadata: %w", err)
 	}
 
+	// If cache client is configured, promote unencrypted copy to Tier 1 Cache
+	if p.cacheClient != nil && p.cacheClient.IsConfigured() {
+		go func(b, k string) {
+			promoteCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			_ = p.PromoteToCache(promoteCtx, b, k)
+		}(bucket, key)
+	}
+
 	return obj, nil
 }
 
@@ -506,18 +537,13 @@ func (r *chunkStreamReader) Close() error {
 	return nil
 }
 
-func (p *PoolManager) GetObject(ctx context.Context, bucket, key string, byteRange *ByteRange) (*models.Object, io.ReadCloser, error) {
-	obj, chunks, err := p.db.GetObjectWithChunks(ctx, bucket, key)
-	if err != nil {
-		return nil, nil, err
-	}
-
+func (p *PoolManager) GetObjectStream(ctx context.Context, obj *models.Object, chunks []models.Chunk, byteRange *ByteRange) (io.ReadCloser, error) {
 	start := int64(0)
 	end := obj.Size - 1
 
 	if byteRange != nil {
 		if byteRange.Start < 0 || byteRange.End >= obj.Size || byteRange.Start > byteRange.End {
-			return nil, nil, ErrInvalidRange
+			return nil, ErrInvalidRange
 		}
 		start = byteRange.Start
 		end = byteRange.End
@@ -546,15 +572,55 @@ func (p *PoolManager) GetObject(ctx context.Context, bucket, key string, byteRan
 		prefetchCh: make(chan prefetchItem, 1),
 	}
 
-	// Prime the pipeline with the first chunk prefetch
 	if len(relevantChunks) > 0 {
 		reader.prefetchNext(0)
+	}
+
+	return reader, nil
+}
+
+func (p *PoolManager) GetObject(ctx context.Context, bucket, key string, byteRange *ByteRange) (*models.Object, io.ReadCloser, error) {
+	obj, chunks, err := p.db.GetObjectWithChunks(ctx, bucket, key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Fast path: if whole object is requested and Tier 1 Cache is available, stream unencrypted directly from HF Storage Bucket
+	if byteRange == nil && p.cacheClient != nil && p.cacheClient.IsConfigured() {
+		cacheLoc, err := p.db.GetObjectLocationByTier(ctx, obj.ID, models.TierCache)
+		if err == nil && cacheLoc != nil {
+			cacheReader, _, _, err := p.cacheClient.GetObject(ctx, p.cacheClient.Bucket(), cacheLoc.RemotePath)
+			if err == nil && cacheReader != nil {
+				go func(locID int64) {
+					_ = p.db.RecordLocationAccess(context.Background(), locID)
+				}(cacheLoc.ID)
+				return obj, cacheReader, nil
+			}
+		}
+	}
+
+	reader, err := p.GetObjectStream(ctx, obj, chunks, byteRange)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Trigger auto-promotion to Tier 1 Cache in background if configured
+	if p.cacheClient != nil && p.cacheClient.IsConfigured() {
+		go func(b, k string) {
+			promoteCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			_ = p.PromoteToCache(promoteCtx, b, k)
+		}(bucket, key)
 	}
 
 	return obj, reader, nil
 }
 
 func (p *PoolManager) DeleteObject(ctx context.Context, bucket, key string) error {
+	if p.cacheClient != nil && p.cacheClient.IsConfigured() {
+		_ = p.cacheClient.DeleteObject(ctx, p.cacheClient.Bucket(), fmt.Sprintf("%s/%s", bucket, key))
+	}
+
 	chunks, err := p.db.DeleteObject(ctx, bucket, key)
 	if err != nil {
 		return fmt.Errorf("delete object from db: %w", err)

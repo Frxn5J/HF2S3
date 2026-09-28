@@ -192,6 +192,96 @@ func TestDashboardStatsAndBucketsAPI(t *testing.T) {
 	}
 }
 
+func TestUpdateAllSettingsViaAPI(t *testing.T) {
+	handler, mux, token, cleanup := setupTestDashboard(t)
+	defer cleanup()
+
+	var updatedKey, updatedSecret string
+	handler.SetCredentialsUpdater(func(k, s string) {
+		if k != "" {
+			updatedKey = k
+		}
+		if s != "" {
+			updatedSecret = s
+		}
+	})
+
+	// 1. Post new settings configuring EVERYTHING
+	updatePayload := map[string]interface{}{
+		"admin_username":         "superadmin",
+		"admin_password":         "superpass456",
+		"access_key_id":          "new-s3-key",
+		"secret_access_key":      "new-s3-secret",
+		"s3_region":              "eu-west-1",
+		"master_key":             "my-new-aes-secret-key-32chars!!",
+		"chunk_size_mb":          64,
+		"hf_storage_endpoint":    "https://s3.hf.co",
+		"hf_storage_region":      "us-east-1",
+		"hf_storage_access_key":  "HFAKnewStorageKey",
+		"hf_storage_secret_key":  "newStorageSecret123",
+		"hf_storage_bucket":      "my-custom-cache-bucket",
+	}
+	body, _ := json.Marshal(updatePayload)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader(body))
+	req.Header.Set("X-Admin-Token", token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from POST /api/settings, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Verify live credentials updater was invoked
+	if updatedKey != "new-s3-key" || updatedSecret != "new-s3-secret" {
+		t.Fatalf("Expected live credentials updater to receive new-s3-key and new-s3-secret, got k=%s s=%s", updatedKey, updatedSecret)
+	}
+
+	// 2. Fetch GET /api/settings and verify all fields updated
+	req = httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.Header.Set("X-Admin-Token", token)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from GET /api/settings, got %d", rec.Code)
+	}
+	var getResp map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&getResp)
+
+	if getResp["admin_username"] != "superadmin" {
+		t.Errorf("Expected admin_username superadmin, got %v", getResp["admin_username"])
+	}
+	if getResp["access_key_id"] != "new-s3-key" {
+		t.Errorf("Expected access_key_id new-s3-key, got %v", getResp["access_key_id"])
+	}
+	if getResp["s3_region"] != "eu-west-1" {
+		t.Errorf("Expected s3_region eu-west-1, got %v", getResp["s3_region"])
+	}
+	if getResp["master_key"] != "my-new-aes-secret-key-32chars!!" {
+		t.Errorf("Expected master_key updated, got %v", getResp["master_key"])
+	}
+	if getResp["chunk_size_mb"] != float64(64) {
+		t.Errorf("Expected chunk_size_mb 64, got %v", getResp["chunk_size_mb"])
+	}
+	if getResp["hf_storage_bucket"] != "my-custom-cache-bucket" {
+		t.Errorf("Expected hf_storage_bucket my-custom-cache-bucket, got %v", getResp["hf_storage_bucket"])
+	}
+
+	// 3. Verify login works with the NEW admin credentials
+	loginBody, _ := json.Marshal(map[string]string{
+		"username": "superadmin",
+		"password": "superpass456",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(loginBody))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK logging in with new admin credentials, got %d", rec.Code)
+	}
+}
+
 func TestStaticAssetsServing(t *testing.T) {
 	_, mux, _, cleanup := setupTestDashboard(t)
 	defer cleanup()

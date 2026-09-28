@@ -17,6 +17,7 @@ import (
 	"hf2s3/pkg/crypto"
 	"hf2s3/pkg/db"
 	"hf2s3/pkg/hfclient"
+	"hf2s3/pkg/hfstorage"
 	"hf2s3/pkg/models"
 	"hf2s3/pkg/storage"
 )
@@ -282,4 +283,98 @@ func TestS3ConcurrentUsersBenchmark(t *testing.T) {
 	opsPerSec := float64(totalOps) / duration.Seconds()
 	t.Logf("S3 Concurrency Benchmark Passed: %d ops across %d users in %v (%.1f ops/sec)", totalOps, numUsers, duration, opsPerSec)
 }
+
+func TestMultiTierDirectDownloadRedirect(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open db failed: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	_ = database.CreateBucket(ctx, "videobucket")
+	testAcc := &models.Account{
+		Name:     "Test",
+		Username: "user",
+		Token:    "tok",
+		RepoName: "user/repo",
+		IsActive: true,
+	}
+	_ = database.CreateAccount(ctx, testAcc)
+
+	masterPass := "testpass"
+	derivedKey := crypto.DeriveKey(masterPass)
+	hfCli := hfclient.NewClient()
+	cacheCli := hfstorage.NewS3Client(hfstorage.S3ClientConfig{
+		Endpoint:  "https://s3.hf.co",
+		Region:    "us-east-1",
+		AccessKey: "HFAKTEST",
+		SecretKey: "secret",
+		Bucket:    "cache-bucket",
+	})
+
+	pool := storage.NewPoolManager(database, hfCli, derivedKey, 32*1024*1024)
+	pool.SetCacheClient(cacheCli)
+
+	server := NewServer(pool, nil) // No auth required for test
+
+	// Create object with TierCache location
+	obj := &models.Object{
+		Bucket:      "videobucket",
+		Key:         "movies/sample.mp4",
+		Size:        1000,
+		ETag:        `"etag-sample"`,
+		ContentType: "video/mp4",
+	}
+	locations := []models.ObjectLocation{
+		{
+			Tier:       models.TierCache,
+			AccountID:  testAcc.ID,
+			RemotePath: "videobucket/movies/sample.mp4",
+			SizeBytes:  1000,
+		},
+	}
+	_ = database.SaveObjectWithChunksAndLocations(ctx, obj, nil, locations)
+
+	// 1. Test GET /videobucket/movies/sample.mp4 -> Expect HTTP 302 Found redirect with presigned Location
+	req := httptest.NewRequest(http.MethodGet, "/videobucket/movies/sample.mp4", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("Expected HTTP 302 Found redirect, got: %d", rec.Code)
+	}
+	locHeader := rec.Header().Get("Location")
+	if locHeader == "" || !strings.Contains(locHeader, "s3.hf.co") {
+		t.Errorf("Expected redirect Location to s3.hf.co, got: %s", locHeader)
+	}
+	if rec.Header().Get("X-HF2S3-Cache-Status") != "HIT" {
+		t.Errorf("Expected Cache HIT header")
+	}
+
+	// 2. Test GET /media/videobucket/movies/sample.mp4 -> Dedicated media route
+	mediaReq := httptest.NewRequest(http.MethodGet, "/media/videobucket/movies/sample.mp4", nil)
+	mediaRec := httptest.NewRecorder()
+	server.ServeHTTP(mediaRec, mediaReq)
+
+	if mediaRec.Code != http.StatusFound {
+		t.Fatalf("Expected HTTP 302 Found on /media route, got: %d", mediaRec.Code)
+	}
+	if mediaRec.Header().Get("Location") != locHeader {
+		t.Errorf("Location mismatch on /media route: %s vs %s", mediaRec.Header().Get("Location"), locHeader)
+	}
+
+	// 3. Test HEAD /videobucket/movies/sample.mp4
+	headReq := httptest.NewRequest(http.MethodHead, "/videobucket/movies/sample.mp4", nil)
+	headRec := httptest.NewRecorder()
+	server.ServeHTTP(headRec, headReq)
+
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK on HEAD, got: %d", headRec.Code)
+	}
+	if headRec.Header().Get("X-HF2S3-Cache-Status") != "HIT" {
+		t.Errorf("Expected Cache-Status HIT on HEAD")
+	}
+}
+
 

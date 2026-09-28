@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"hf2s3/pkg/crypto"
 	"hf2s3/pkg/hfclient"
+	"hf2s3/pkg/hfstorage"
 	"hf2s3/pkg/models"
 	"hf2s3/pkg/storage"
 )
@@ -20,11 +22,12 @@ import (
 var staticFS embed.FS
 
 type DashboardHandler struct {
-	pool       *storage.PoolManager
-	settings   *models.SystemSettings
-	adminAuth  *AdminAuthManager
-	serverPort int
-	fileServer http.Handler
+	pool               *storage.PoolManager
+	settings           *models.SystemSettings
+	adminAuth          *AdminAuthManager
+	serverPort         int
+	fileServer         http.Handler
+	credentialsUpdater func(accessKey, secretKey string)
 }
 
 func NewDashboardHandler(pool *storage.PoolManager, settings *models.SystemSettings, serverPort int, adminAuth *AdminAuthManager) *DashboardHandler {
@@ -47,6 +50,10 @@ func NewDashboardHandler(pool *storage.PoolManager, settings *models.SystemSetti
 		serverPort: serverPort,
 		fileServer: fsHandler,
 	}
+}
+
+func (h *DashboardHandler) SetCredentialsUpdater(fn func(accessKey, secretKey string)) {
+	h.credentialsUpdater = fn
 }
 
 func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -73,6 +80,11 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/objects/upload", h.adminAuth.RequireAuth(h.handleUploadObject))
 	mux.HandleFunc("GET /api/objects/download", h.adminAuth.RequireAuth(h.handleDownloadObject))
 	mux.HandleFunc("DELETE /api/objects", h.adminAuth.RequireAuth(h.handleDeleteObject))
+
+	// Multi-Tier Cache routes
+	mux.HandleFunc("POST /api/objects/evict-cache", h.adminAuth.RequireAuth(h.handleEvictCache))
+	mux.HandleFunc("POST /api/objects/promote-cache", h.adminAuth.RequireAuth(h.handlePromoteCache))
+	mux.HandleFunc("GET /api/media/info", h.handleGetMediaInfo)
 
 	mux.HandleFunc("GET /api/settings", h.adminAuth.RequireAuth(h.handleGetSettings))
 	mux.HandleFunc("POST /api/settings", h.adminAuth.RequireAuth(h.handleUpdateSettings))
@@ -572,6 +584,87 @@ func (h *DashboardHandler) handleDeleteObject(w http.ResponseWriter, r *http.Req
 	h.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
+// --- Multi-Tier Cache Operations ---
+
+func (h *DashboardHandler) handleEvictCache(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Bucket string `json:"bucket"`
+		Key    string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+	if req.Bucket == "" || req.Key == "" {
+		h.writeError(w, http.StatusBadRequest, "Bucket and key are required")
+		return
+	}
+
+	if err := h.pool.EvictCache(r.Context(), req.Bucket, req.Key); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Object evicted from Tier 1 Cache. Golden original copy in public dataset is preserved.",
+	})
+}
+
+func (h *DashboardHandler) handlePromoteCache(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Bucket string `json:"bucket"`
+		Key    string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+	if req.Bucket == "" || req.Key == "" {
+		h.writeError(w, http.StatusBadRequest, "Bucket and key are required")
+		return
+	}
+
+	if err := h.pool.PromoteToCache(r.Context(), req.Bucket, req.Key); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Object successfully promoted to Tier 1 Cache.",
+	})
+}
+
+func (h *DashboardHandler) handleGetMediaInfo(w http.ResponseWriter, r *http.Request) {
+	bucket := r.URL.Query().Get("bucket")
+	key := r.URL.Query().Get("key")
+	if bucket == "" || key == "" {
+		h.writeError(w, http.StatusBadRequest, "Bucket and key are required")
+		return
+	}
+
+	obj, err := h.pool.DB().HeadObject(r.Context(), bucket, key)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "Object not found")
+		return
+	}
+
+	var directURL string
+	if obj.HasCache && h.pool.CacheClient() != nil && h.pool.CacheClient().IsConfigured() {
+		loc, err := h.pool.DB().GetObjectLocationByTier(r.Context(), obj.ID, models.TierCache)
+		if err == nil && loc != nil {
+			directURL, _ = h.pool.CacheClient().PresignGetObject(h.pool.CacheClient().Bucket(), loc.RemotePath, 15*time.Minute)
+		}
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"object":              obj,
+		"direct_download_url": directURL,
+		"is_cached":           obj.HasCache,
+		"is_cold":             obj.HasCold,
+		"media_stream_url":    fmt.Sprintf("/media/%s/%s", bucket, key),
+	})
+}
+
 // --- Settings ---
 
 func (h *DashboardHandler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -615,13 +708,19 @@ s3 = boto3.client(
 s3.upload_file('local_file.pdf', 'my-bucket', 'remote_file.pdf')`, endpoint, h.settings.AccessKeyID, h.settings.SecretAccessKey, h.settings.S3Region)
 
 	response := map[string]interface{}{
-		"endpoint":          endpoint,
-		"access_key_id":     h.settings.AccessKeyID,
-		"secret_access_key": h.settings.SecretAccessKey,
-		"s3_region":         h.settings.S3Region,
-		"chunk_size_mb":     h.settings.ChunkSizeMB,
-		"admin_username":    h.adminAuth.username,
-		"encryption":        "AES-256-GCM (Hardware Accelerated)",
+		"endpoint":              endpoint,
+		"access_key_id":         h.settings.AccessKeyID,
+		"secret_access_key":     h.settings.SecretAccessKey,
+		"s3_region":             h.settings.S3Region,
+		"chunk_size_mb":         h.settings.ChunkSizeMB,
+		"master_key":            h.settings.MasterKey,
+		"admin_username":        h.adminAuth.GetUsername(),
+		"encryption":            "AES-256-GCM (Zero-Knowledge Authenticated)",
+		"hf_storage_endpoint":   h.settings.HFStorageEndpoint,
+		"hf_storage_region":     h.settings.HFStorageRegion,
+		"hf_storage_access_key": h.settings.HFStorageAccessKey,
+		"hf_storage_bucket":     h.settings.HFStorageBucket,
+		"hf_storage_configured": h.pool.CacheClient() != nil && h.pool.CacheClient().IsConfigured(),
 		"snippets": map[string]string{
 			"rclone": rcloneConfig,
 			"awscli": awsCLIConfig,
@@ -634,27 +733,122 @@ s3.upload_file('local_file.pdf', 'my-bucket', 'remote_file.pdf')`, endpoint, h.s
 
 func (h *DashboardHandler) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AccessKeyID     string `json:"access_key_id"`
-		SecretAccessKey string `json:"secret_access_key"`
-		S3Region        string `json:"s3_region"`
+		AdminUsername      string `json:"admin_username"`
+		AdminPassword      string `json:"admin_password"`
+		AccessKeyID        string `json:"access_key_id"`
+		SecretAccessKey    string `json:"secret_access_key"`
+		S3Region           string `json:"s3_region"`
+		MasterKey          string `json:"master_key"`
+		ChunkSizeMB        int    `json:"chunk_size_mb"`
+		HFStorageEndpoint  string `json:"hf_storage_endpoint"`
+		HFStorageRegion    string `json:"hf_storage_region"`
+		HFStorageAccessKey string `json:"hf_storage_access_key"`
+		HFStorageSecretKey string `json:"hf_storage_secret_key"`
+		HFStorageBucket    string `json:"hf_storage_bucket"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
+	// Update Admin Credentials
+	if req.AdminUsername != "" || req.AdminPassword != "" {
+		h.adminAuth.SetCredentials(req.AdminUsername, req.AdminPassword)
+		if req.AdminUsername != "" {
+			_ = h.pool.DB().SetSetting(r.Context(), "admin_username", req.AdminUsername)
+		}
+		if req.AdminPassword != "" {
+			_ = h.pool.DB().SetSetting(r.Context(), "admin_password", req.AdminPassword)
+		}
+	}
+
+	// Update S3 Credentials & Region
 	if req.AccessKeyID != "" {
 		h.settings.AccessKeyID = req.AccessKeyID
 		_ = h.pool.DB().SetSetting(r.Context(), "access_key_id", req.AccessKeyID)
+		if h.credentialsUpdater != nil {
+			h.credentialsUpdater(req.AccessKeyID, "")
+		}
 	}
 	if req.SecretAccessKey != "" {
 		h.settings.SecretAccessKey = req.SecretAccessKey
 		_ = h.pool.DB().SetSetting(r.Context(), "secret_access_key", req.SecretAccessKey)
+		if h.credentialsUpdater != nil {
+			h.credentialsUpdater("", req.SecretAccessKey)
+		}
 	}
 	if req.S3Region != "" {
 		h.settings.S3Region = req.S3Region
 		_ = h.pool.DB().SetSetting(r.Context(), "s3_region", req.S3Region)
 	}
 
-	h.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	// Update Encryption Master Key (Zero-Knowledge)
+	if req.MasterKey != "" {
+		h.settings.MasterKey = req.MasterKey
+		_ = h.pool.DB().SetSetting(r.Context(), "master_key", req.MasterKey)
+		derivedKey := crypto.DeriveKey(req.MasterKey)
+		h.pool.SetMasterKey(derivedKey)
+	}
+
+	// Update Cold Tier Dataset Chunk Size
+	if req.ChunkSizeMB > 0 {
+		h.settings.ChunkSizeMB = req.ChunkSizeMB
+		_ = h.pool.DB().SetSetting(r.Context(), "chunk_size_mb", strconv.Itoa(req.ChunkSizeMB))
+		h.pool.SetChunkSize(int64(req.ChunkSizeMB) * 1024 * 1024)
+	}
+
+	// Update HF Storage Bucket Cache (Tier 1)
+	if req.HFStorageAccessKey != "" || req.HFStorageBucket != "" || req.HFStorageSecretKey != "" || req.HFStorageEndpoint != "" || req.HFStorageRegion != "" {
+		endpoint := req.HFStorageEndpoint
+		if endpoint == "" {
+			endpoint = h.settings.HFStorageEndpoint
+		}
+		if endpoint == "" {
+			endpoint = "https://s3.hf.co"
+		}
+		region := req.HFStorageRegion
+		if region == "" {
+			region = h.settings.HFStorageRegion
+		}
+		if region == "" {
+			region = "us-east-1"
+		}
+		accKey := req.HFStorageAccessKey
+		if accKey == "" {
+			accKey = h.settings.HFStorageAccessKey
+		}
+		secKey := req.HFStorageSecretKey
+		if secKey == "" {
+			secKey = h.settings.HFStorageSecretKey
+		}
+		bName := req.HFStorageBucket
+		if bName == "" {
+			bName = h.settings.HFStorageBucket
+		}
+
+		newCache := hfstorage.NewS3Client(hfstorage.S3ClientConfig{
+			Endpoint:  endpoint,
+			Region:    region,
+			AccessKey: accKey,
+			SecretKey: secKey,
+			Bucket:    bName,
+		})
+		h.pool.SetCacheClient(newCache)
+		h.settings.HFStorageEndpoint = endpoint
+		h.settings.HFStorageRegion = region
+		h.settings.HFStorageAccessKey = accKey
+		h.settings.HFStorageSecretKey = secKey
+		h.settings.HFStorageBucket = bName
+
+		_ = h.pool.DB().SetSetting(r.Context(), "hf_storage_endpoint", endpoint)
+		_ = h.pool.DB().SetSetting(r.Context(), "hf_storage_region", region)
+		_ = h.pool.DB().SetSetting(r.Context(), "hf_storage_access_key", accKey)
+		_ = h.pool.DB().SetSetting(r.Context(), "hf_storage_secret_key", secKey)
+		_ = h.pool.DB().SetSetting(r.Context(), "hf_storage_bucket", bName)
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Configuración actualizada y persistida correctamente",
+	})
 }

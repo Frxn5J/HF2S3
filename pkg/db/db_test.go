@@ -174,3 +174,148 @@ func TestBucketAndObjectCRUD(t *testing.T) {
 		t.Fatalf("Expected object to be deleted, but found it")
 	}
 }
+
+func TestMultiTierObjectLocations(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	bucketName := "media-bucket"
+	if err := db.CreateBucket(ctx, bucketName); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	testAcc := &models.Account{
+		Name:       "HF Account 1",
+		Username:   "hftest",
+		Token:      "hf_token",
+		RepoName:   "hftest/public-media",
+		QuotaBytes: 100 * 1024 * 1024 * 1024,
+		IsActive:   true,
+		IsPublic:   true,
+	}
+	if err := db.CreateAccount(ctx, testAcc); err != nil {
+		t.Fatalf("CreateAccount failed: %v", err)
+	}
+
+	// 1. Create object with both Cold (Dataset) and Cache (Storage Bucket) locations
+	obj := &models.Object{
+		Bucket:      bucketName,
+		Key:         "videos/nature.mp4",
+		Size:        5000000,
+		ETag:        `"etag-nature-5mb"`,
+		ContentType: "video/mp4",
+	}
+
+	locations := []models.ObjectLocation{
+		{
+			Tier:        models.TierCold,
+			AccountID:   testAcc.ID,
+			RemotePath:  "data/nature_encrypted.enc",
+			IsEncrypted: true,
+			SizeBytes:   5000028,
+		},
+		{
+			Tier:        models.TierCache,
+			AccountID:   testAcc.ID,
+			RemotePath:  "cache/media-bucket/videos/nature.mp4",
+			IsEncrypted: false,
+			SizeBytes:   5000000,
+		},
+	}
+
+	err := db.SaveObjectWithChunksAndLocations(ctx, obj, nil, locations)
+	if err != nil {
+		t.Fatalf("SaveObjectWithChunksAndLocations failed: %v", err)
+	}
+
+	// 2. Verify object tiers populated
+	headObj, err := db.HeadObject(ctx, bucketName, "videos/nature.mp4")
+	if err != nil {
+		t.Fatalf("HeadObject failed: %v", err)
+	}
+	if !headObj.HasCache {
+		t.Errorf("Expected HasCache to be true")
+	}
+	if !headObj.HasCold {
+		t.Errorf("Expected HasCold to be true")
+	}
+	if len(headObj.Locations) != 2 {
+		t.Errorf("Expected 2 locations, got %d", len(headObj.Locations))
+	}
+
+	// 3. Verify GetObjectLocationByTier
+	cacheLoc, err := db.GetObjectLocationByTier(ctx, headObj.ID, models.TierCache)
+	if err != nil {
+		t.Fatalf("GetObjectLocationByTier(cache) failed: %v", err)
+	}
+	if cacheLoc.RemotePath != "cache/media-bucket/videos/nature.mp4" {
+		t.Errorf("Unexpected cache remote path: %s", cacheLoc.RemotePath)
+	}
+
+	coldLoc, err := db.GetObjectLocationByTier(ctx, headObj.ID, models.TierCold)
+	if err != nil {
+		t.Fatalf("GetObjectLocationByTier(cold) failed: %v", err)
+	}
+	if !coldLoc.IsEncrypted {
+		t.Errorf("Expected cold location to be encrypted")
+	}
+
+	// 4. Test Cache Eviction (deleting only TierCache location)
+	err = db.DeleteObjectLocationByTier(ctx, headObj.ID, models.TierCache)
+	if err != nil {
+		t.Fatalf("DeleteObjectLocationByTier(cache) failed: %v", err)
+	}
+
+	// 5. Verify that cache is gone but cold golden copy persists
+	headAfterEvict, err := db.HeadObject(ctx, bucketName, "videos/nature.mp4")
+	if err != nil {
+		t.Fatalf("HeadObject after eviction failed: %v", err)
+	}
+	if headAfterEvict.HasCache {
+		t.Errorf("Expected HasCache to be false after eviction")
+	}
+	if !headAfterEvict.HasCold {
+		t.Errorf("Expected HasCold to remain true after eviction (golden copy preserved!)")
+	}
+
+	// 6. Test re-adding cache location (promotion)
+	newCacheLoc := &models.ObjectLocation{
+		ObjectID:    headObj.ID,
+		Tier:        models.TierCache,
+		AccountID:   testAcc.ID,
+		RemotePath:  "cache/media-bucket/videos/nature.mp4",
+		IsEncrypted: false,
+		SizeBytes:   5000000,
+	}
+	err = db.SaveObjectLocation(ctx, newCacheLoc)
+	if err != nil {
+		t.Fatalf("SaveObjectLocation (re-promotion) failed: %v", err)
+	}
+
+	headAfterPromote, err := db.HeadObject(ctx, bucketName, "videos/nature.mp4")
+	if err != nil {
+		t.Fatalf("HeadObject after promote failed: %v", err)
+	}
+	if !headAfterPromote.HasCache {
+		t.Errorf("Expected HasCache to be true after promotion")
+	}
+
+	// 7. Test LRU ordering
+	lruList, err := db.ListLRUCacheLocations(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListLRUCacheLocations failed: %v", err)
+	}
+	if len(lruList) != 1 {
+		t.Errorf("Expected 1 LRU cache location, got %d", len(lruList))
+	}
+
+	// 8. Stats check
+	stats, err := db.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if stats.CachedObjects != 1 || stats.ColdObjects != 1 {
+		t.Errorf("Stats mismatch: cached=%d, cold=%d", stats.CachedObjects, stats.ColdObjects)
+	}
+}
+

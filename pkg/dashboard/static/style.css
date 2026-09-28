@@ -1142,7 +1142,10 @@ body {
 .btn-del-file:focus-visible,
 .btn-dl-file:focus-visible,
 .btn-inspect-file:focus-visible,
-.btn-copy:focus-visible {
+.btn-copy:focus-visible,
+.btn-evict-file:focus-visible,
+.btn-promote-file:focus-visible,
+.btn-stream:focus-visible {
   outline: 2px solid var(--accent-cyan) !important;
   outline-offset: 2px !important;
 }
@@ -1159,6 +1162,86 @@ body {
 .file-key-cell svg {
   flex-shrink: 0;
   color: var(--accent-cyan);
+}
+
+/* Multi-Tier Cache Badges & Action Controls */
+.card-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.tier-badges-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+
+.tier-cache {
+  background: rgba(6, 182, 212, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+}
+
+.tier-cold {
+  background: rgba(99, 102, 241, 0.15);
+  color: #c7d2fe;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+}
+
+.tier-none {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-dim);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.btn-stream {
+  border-color: rgba(6, 182, 212, 0.5) !important;
+  color: var(--accent-cyan) !important;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-stream:hover {
+  background: rgba(6, 182, 212, 0.15) !important;
+  color: #fff !important;
+}
+
+.btn-evict-file {
+  border-color: rgba(244, 63, 94, 0.4) !important;
+  color: #fda4af !important;
+}
+
+.btn-evict-file:hover {
+  background: rgba(244, 63, 94, 0.15) !important;
+  color: #fff !important;
+}
+
+.btn-promote-file {
+  border-color: rgba(16, 185, 129, 0.4) !important;
+  color: #6ee7b7 !important;
+}
+
+.btn-promote-file:hover {
+  background: rgba(16, 185, 129, 0.15) !important;
+  color: #fff !important;
 }
 
 /* Responsive Breakpoints & Mobile Layout (R-03 / antislop-layoutmobile) */

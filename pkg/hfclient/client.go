@@ -230,10 +230,14 @@ func (c *Client) VerifyToken(ctx context.Context, token string) (*WhoamiResponse
 }
 
 func (c *Client) EnsureDatasetRepo(ctx context.Context, token, repoName string) error {
+	return c.EnsureDatasetRepoWithVisibility(ctx, token, repoName, false) // Default to public dataset as requested
+}
+
+func (c *Client) EnsureDatasetRepoWithVisibility(ctx context.Context, token, repoName string, isPrivate bool) error {
 	payload := map[string]interface{}{
 		"name":    repoName,
 		"type":    "dataset",
-		"private": true,
+		"private": isPrivate,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -245,7 +249,9 @@ func (c *Client) EnsureDatasetRepo(ctx context.Context, token, repoName string) 
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		req.Header.Set("Content-Type", "application/json")
 		return req, nil
 	}, 3)
@@ -262,6 +268,7 @@ func (c *Client) EnsureDatasetRepo(ctx context.Context, token, repoName string) 
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("ensure dataset repo status %d: %s", resp.StatusCode, string(body))
 }
+
 
 // Git LFS Batch Protocol Models
 type LfsBatchRequest struct {
@@ -484,7 +491,9 @@ func (c *Client) DownloadChunk(ctx context.Context, token, repoID, remotePath st
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		return req, nil
 	}, 3)
 	if err != nil {

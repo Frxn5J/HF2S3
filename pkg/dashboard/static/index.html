@@ -220,6 +220,7 @@
                   <tr>
                     <th>Nombre de Archivo</th>
                     <th>Tamaño</th>
+                    <th>Nivel / Caché</th>
                     <th>ETag S3</th>
                     <th>Tipo</th>
                     <th>Modificado</th>
@@ -228,7 +229,7 @@
                 </thead>
                 <tbody id="filesTableBody">
                   <tr>
-                    <td colspan="6" class="empty-state">Selecciona un bucket para explorar sus archivos</td>
+                    <td colspan="7" class="empty-state">Selecciona un bucket para explorar sus archivos</td>
                   </tr>
                 </tbody>
               </table>
@@ -295,17 +296,47 @@
 
       <!-- TAB 5: SETTINGS -->
       <section class="tab-pane" id="pane-settings">
+        <!-- 1. Web Dashboard Admin Account Settings -->
         <div class="glass-card settings-box">
-          <h3>Configuraciones del Servidor</h3>
-          <p>Ajustes de seguridad, credenciales y motor de cifrado.</p>
+          <div class="card-header-row">
+            <div>
+              <h3>Acceso al Panel Web (Administrador)</h3>
+              <p>Modifica el usuario y la contraseña con los que inicias sesión en este panel de control.</p>
+            </div>
+            <span class="user-chip-name" id="settingsCurrentAdminBadge" style="background:rgba(99,102,241,0.15);color:var(--accent-primary);padding:4px 10px;border-radius:999px;font-size:0.75rem;font-weight:600;">admin</span>
+          </div>
+
+          <form id="formAdminAuth">
+            <div class="form-group">
+              <label>Usuario Administrador</label>
+              <input type="text" class="input-text" id="setAdminUser" required autocomplete="username" />
+            </div>
+            <div class="form-group">
+              <label>Nueva Contraseña</label>
+              <input type="password" class="input-text" id="setAdminPass" placeholder="Dejar en blanco para conservar la actual" autocomplete="new-password" />
+            </div>
+            <div class="form-group">
+              <label>Confirmar Nueva Contraseña</label>
+              <input type="password" class="input-text" id="setAdminPassConfirm" placeholder="Repite la nueva contraseña" autocomplete="new-password" />
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" id="btnSaveAdminAuth">Actualizar Acceso Administrador</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- 2. S3 Gateway Credentials -->
+        <div class="glass-card settings-box" style="margin-top: 1.5rem;">
+          <h3>Credenciales de la API S3 / Cloudflare R2</h3>
+          <p>Credenciales que utilizan tus clientes (Rclone, AWS CLI, Cyberduck, etc.) para conectarse a este gateway.</p>
 
           <form id="settingsForm">
             <div class="form-group">
-              <label>Nuevo Access Key ID</label>
+              <label>S3 Access Key ID</label>
               <input type="text" class="input-text" id="setAccessKey" required />
             </div>
             <div class="form-group">
-              <label>Nuevo Secret Access Key</label>
+              <label>S3 Secret Access Key</label>
               <input type="password" class="input-text" id="setSecretKey" required />
             </div>
             <div class="form-group">
@@ -313,30 +344,116 @@
               <input type="text" class="input-text" id="setRegion" value="us-east-1" />
             </div>
             <div class="form-actions">
-              <button type="submit" class="btn btn-primary">Guardar Credenciales</button>
+              <button type="submit" class="btn btn-primary">Guardar Credenciales S3</button>
             </div>
           </form>
-
-          <div class="security-info-box">
-            <h4>Detalles de Criptografía</h4>
-            <p>Los datos en tránsito se reciben vía HTTP S3 y antes de enviarse a Hugging Face se procesan en bloques con <strong>AES-256-GCM</strong> (clave derivada SHA-256, Nonce único aleatorio de 12 bytes por chunk). Hugging Face únicamente almacena archivos binarios cifrados opacos.</p>
-          </div>
         </div>
 
-        <!-- Database Backup & Migration Card -->
+        <!-- 3. HF Storage S3 Cache (Tier 1) Card -->
         <div class="glass-card settings-box" style="margin-top: 1.5rem;">
           <div class="card-header-row">
             <div>
-              <h3>Respaldo y Migración de Base de Datos</h3>
-              <p>Descarga la base de datos completa para montarla en otra instancia o en Coolify sin perder datos.</p>
+              <h3>Caché de Entrega Rápida S3 (Hugging Face Storage Buckets - Tier 1)</h3>
+              <p>Almacena copias multimedia sin cifrar para descarga directa de alta velocidad (HTTP 302 a URL prefirmada SigV4) sin consumir ancho de banda del VPS.</p>
+            </div>
+            <div id="hfStorageStatusBadge" class="badge-inactive">No Configurado</div>
+          </div>
+
+          <form id="hfStorageForm" style="margin-top: 1rem;">
+            <div class="form-group">
+              <label>Endpoint HF Storage S3</label>
+              <input type="text" class="input-text" id="setHFStorageEndpoint" placeholder="https://s3.hf.co" value="https://s3.hf.co" />
+            </div>
+            <div class="form-group">
+              <label>Región HF Storage</label>
+              <input type="text" class="input-text" id="setHFStorageRegion" placeholder="us-east-1" value="us-east-1" />
+            </div>
+            <div class="form-group">
+              <label>Access Key ID de Hugging Face (HFAK...)</label>
+              <input type="text" class="input-text" id="setHFStorageAccessKey" placeholder="HFAK..." />
+            </div>
+            <div class="form-group">
+              <label>Secret Access Key</label>
+              <input type="password" class="input-text" id="setHFStorageSecretKey" placeholder="••••••••••••••••" />
+            </div>
+            <div class="form-group">
+              <label>Nombre del Bucket de Caché en Hugging Face</label>
+              <input type="text" class="input-text" id="setHFStorageBucket" placeholder="mi-cache-multimedia" />
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" id="btnSaveHFStorage">Guardar Configuración de Caché S3</button>
+            </div>
+          </form>
+
+          <div class="security-info-box" style="margin-top: 1.25rem;">
+            <h4>Arquitectura Inteligente Multi-Nivel</h4>
+            <p>
+              <strong>⚡ Nivel 1 (Caché S3 Privado):</strong> Almacena medios sin cifrar en buckets privados de Hugging Face (<code>s3.hf.co</code>). Al solicitar el archivo, el gateway responde con un <code>HTTP 302 Found</code> a una URL prefirmada temporal. El cliente descarga a velocidad máxima directamente de HF sin exponer credenciales.<br/><br/>
+              <strong>❄️ Nivel 2 (Frío / Datasets Públicos):</strong> Copia maestra original e inmutable cifrada con AES-256-GCM. Si un archivo no está en caché, se descarga y descifra al vuelo, entregándose al cliente y promocionándose automáticamente a la caché en segundo plano. Desalojar la caché jamás borra la copia maestra de los datasets públicos.
+            </p>
+          </div>
+        </div>
+
+        <!-- 4. Cryptographic Engine & Dataset Chunking (Tier 2 Cold) -->
+        <div class="glass-card settings-box" style="margin-top: 1.5rem;">
+          <h3>Criptografía y Fragmentación de Datasets (Tier 2 Frío)</h3>
+          <p>Configuración del motor de cifrado Zero-Knowledge AES-256-GCM y división de chunks en el pool de datasets públicos.</p>
+
+          <form id="formCrypto">
+            <div class="form-group">
+              <label>Frase de Paso Maestra de Cifrado (AES-256-GCM)</label>
+              <div class="copy-input-group">
+                <input type="password" class="input-text" id="setMasterKey" required autocomplete="off" />
+                <button type="button" class="btn btn-secondary" id="btnToggleMasterKeyVisibility">Mostrar</button>
+                <button type="button" class="btn btn-secondary" id="btnGenerateMasterKey" title="Generar clave aleatoria segura">Generar</button>
+              </div>
+              <span class="field-hint">Clave única usada para derivar la llave de cifrado de todos los chunks subidos a Hugging Face. <strong>Consérvala en un lugar seguro.</strong></span>
+            </div>
+
+            <div class="form-group">
+              <label>Tamaño de Fragmento de Chunk (MB)</label>
+              <select class="input-text" id="setChunkSize">
+                <option value="8">8 MB (Archivos pequeños / baja latencia)</option>
+                <option value="16">16 MB (Balanceado)</option>
+                <option value="32" selected>32 MB (Recomendado estándar)</option>
+                <option value="64">64 MB (Archivos grandes / alto rendimiento)</option>
+                <option value="128">128 MB (Archivos masivos)</option>
+              </select>
+              <span class="field-hint">Los archivos se fragmentan en bloques de este tamaño antes de cifrarse y distribuirse entre las cuentas HF conectadas.</span>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" id="btnSaveCrypto">Guardar Parámetros de Almacenamiento Frío</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- 5. Database Backup & Restore Card -->
+        <div class="glass-card settings-box" style="margin-top: 1.5rem;">
+          <div class="card-header-row">
+            <div>
+              <h3>Respaldo y Restauración de Base de Datos</h3>
+              <p>Descarga la base de datos completa o restaura un respaldo previo sin perder ninguna cuenta, bucket ni metadato.</p>
             </div>
             <button type="button" class="btn btn-primary" id="btnDownloadBackup">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
               <span>Descargar Base de Datos (.db)</span>
             </button>
           </div>
-          <div class="backup-info-note">
-            <p>El archivo descargado (<code>.db</code>) contiene todas las cuentas configuradas, buckets, objetos y la tabla de chunks cifrados. Si vas a alojar en <strong>Coolify</strong>, puedes montar este archivo directamente en el volumen persistente <code>/data/hf2s3_metadata.db</code> y el nuevo servidor reconocerá todo al instante.</p>
+
+          <hr style="border:none;border-top:1px solid var(--border-subtle);margin:1.5rem 0;" />
+
+          <h4>Restaurar Base de Datos desde Respaldo (.db)</h4>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin:6px 0 14px;">Sube un archivo de base de datos SQLite previamente exportado para recuperar toda tu configuración al instante.</p>
+          <form id="formRestoreBackup" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="restoreBackupInput" accept=".db,application/x-sqlite3" style="display:none;" />
+            <button type="button" class="btn btn-secondary" id="btnChooseBackupFile">Seleccionar Archivo .db...</button>
+            <span id="restoreBackupFileName" style="font-size:0.82rem;color:var(--text-dim);font-family:var(--font-mono);">Ningún archivo seleccionado</span>
+            <button type="submit" class="btn btn-danger" id="btnSubmitRestore" disabled>Restaurar Base de Datos</button>
+          </form>
+
+          <div class="backup-info-note" style="margin-top:1.25rem;">
+            <p>El archivo descargado (<code>.db</code>) contiene todas las cuentas configuradas, buckets, objetos y la tabla de chunks cifrados. Si vas a alojar en <strong>Coolify</strong> o Docker, este archivo es autónomo y no requiere dependencias adicionales.</p>
           </div>
         </div>
       </section>

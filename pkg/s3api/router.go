@@ -31,12 +31,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "*")
-	w.Header().Set("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Range, Accept-Ranges, x-amz-request-id")
+	w.Header().Set("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Range, Accept-Ranges, x-amz-request-id, Location, X-HF2S3-Cache-Status, X-HF2S3-Tier, X-HF2S3-Tiers")
 	w.Header().Set("x-amz-request-id", uuid.New().String())
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+
+	cleanPath := strings.Trim(r.URL.Path, "/")
+
+	// Dedicated REST Media Streaming route: /media/{bucket}/{key}
+	if strings.HasPrefix(cleanPath, "media/") {
+		sub := strings.TrimPrefix(cleanPath, "media/")
+		parts := strings.SplitN(sub, "/", 2)
+		if len(parts) == 2 {
+			s.handleMediaStream(w, r, parts[0], parts[1])
+			return
+		}
 	}
 
 	// Validate Auth if configured
@@ -45,7 +57,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cleanPath := strings.Trim(r.URL.Path, "/")
 	if cleanPath == "" {
 		if r.Method == http.MethodGet {
 			s.handleListBuckets(w, r)
@@ -289,6 +300,54 @@ func (s *Server) handlePutObject(w http.ResponseWriter, r *http.Request, bucket,
 	w.WriteHeader(http.StatusOK)
 }
 
+func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	presignedURL, obj, coldReader, err := s.pool.GetObjectOrPresigned(r.Context(), bucket, key)
+	if errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "Media not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 1. In Cache: 302 Found redirecting to HF Storage Bucket Presigned URL (zero VPS bandwidth)
+	if presignedURL != "" {
+		w.Header().Set("Location", presignedURL)
+		w.Header().Set("X-HF2S3-Cache-Status", "HIT")
+		w.Header().Set("X-HF2S3-Tier", "cache")
+		if obj != nil {
+			w.Header().Set("ETag", obj.ETag)
+			if obj.ContentType != "" {
+				w.Header().Set("Content-Type", obj.ContentType)
+			}
+		}
+		w.WriteHeader(http.StatusFound)
+		return
+	}
+
+	// 2. Cold Miss: Stream decrypted bytes and trigger auto-promotion
+	if coldReader != nil {
+		defer coldReader.Close()
+		w.Header().Set("X-HF2S3-Cache-Status", "MISS")
+		w.Header().Set("X-HF2S3-Tier", "cold")
+		w.Header().Set("Accept-Ranges", "bytes")
+		if obj != nil {
+			w.Header().Set("ETag", obj.ETag)
+			w.Header().Set("Content-Length", strconv.FormatInt(obj.Size, 10))
+			if obj.ContentType != "" {
+				w.Header().Set("Content-Type", obj.ContentType)
+			}
+			w.Header().Set("Last-Modified", obj.UpdatedAt.UTC().Format(http.TimeFormat))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, coldReader)
+		return
+	}
+
+	http.Error(w, "Media stream unavailable", http.StatusNotFound)
+}
+
 func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	var byteRange *storage.ByteRange
 	rangeHeader := r.Header.Get("Range")
@@ -314,6 +373,36 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request, bucket,
 				if end >= start {
 					byteRange = &storage.ByteRange{Start: start, End: end}
 				}
+			}
+		}
+	}
+
+	// Direct download check: If in cache and client did not explicitly opt out with X-HF2S3-Direct: false
+	if r.Header.Get("X-HF2S3-Direct") != "false" && byteRange == nil {
+		presignedURL, obj, coldReader, err := s.pool.GetObjectOrPresigned(r.Context(), bucket, key)
+		if err == nil {
+			if presignedURL != "" {
+				w.Header().Set("Location", presignedURL)
+				w.Header().Set("X-HF2S3-Cache-Status", "HIT")
+				w.Header().Set("X-HF2S3-Tier", "cache")
+				w.Header().Set("ETag", obj.ETag)
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			if coldReader != nil {
+				defer coldReader.Close()
+				w.Header().Set("ETag", obj.ETag)
+				w.Header().Set("Last-Modified", obj.UpdatedAt.UTC().Format(http.TimeFormat))
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("X-HF2S3-Cache-Status", "MISS")
+				w.Header().Set("X-HF2S3-Tier", "cold")
+				if obj.ContentType != "" {
+					w.Header().Set("Content-Type", obj.ContentType)
+				}
+				w.Header().Set("Content-Length", strconv.FormatInt(obj.Size, 10))
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.Copy(w, coldReader)
+				return
 			}
 		}
 	}
@@ -364,6 +453,15 @@ func (s *Server) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	tiers := "cold"
+	if obj.HasCache {
+		tiers = "cache,cold"
+		w.Header().Set("X-HF2S3-Cache-Status", "HIT")
+	} else {
+		w.Header().Set("X-HF2S3-Cache-Status", "MISS")
+	}
+	w.Header().Set("X-HF2S3-Tiers", tiers)
 
 	w.Header().Set("ETag", obj.ETag)
 	w.Header().Set("Content-Length", strconv.FormatInt(obj.Size, 10))
