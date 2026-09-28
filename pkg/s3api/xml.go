@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const s3NS = "http://s3.amazonaws.com/doc/2006-03-01/"
+
 type ListAllMyBucketsResult struct {
 	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListAllMyBucketsResult"`
 	Owner   Owner    `xml:"Owner"`
@@ -25,15 +27,24 @@ type BucketEntry struct {
 	CreationDate string `xml:"CreationDate"`
 }
 
+// ListBucketResult serves both ListObjects (v1) and ListObjectsV2; the fields
+// that do not apply to a version are left empty and omitted.
 type ListBucketResult struct {
-	XMLName        xml.Name       `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListBucketResult"`
-	Name           string         `xml:"Name"`
-	Prefix         string         `xml:"Prefix"`
-	KeyCount       int            `xml:"KeyCount"`
-	MaxKeys        int            `xml:"MaxKeys"`
-	IsTruncated    bool           `xml:"IsTruncated"`
-	Contents       []ObjectEntry  `xml:"Contents"`
-	CommonPrefixes []CommonPrefix `xml:"CommonPrefixes,omitempty"`
+	XMLName               xml.Name       `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListBucketResult"`
+	Name                  string         `xml:"Name"`
+	Prefix                string         `xml:"Prefix"`
+	Delimiter             string         `xml:"Delimiter,omitempty"`
+	EncodingType          string         `xml:"EncodingType,omitempty"`
+	KeyCount              int            `xml:"KeyCount,omitempty"`
+	MaxKeys               int            `xml:"MaxKeys"`
+	IsTruncated           bool           `xml:"IsTruncated"`
+	Marker                *string        `xml:"Marker,omitempty"`
+	NextMarker            string         `xml:"NextMarker,omitempty"`
+	ContinuationToken     string         `xml:"ContinuationToken,omitempty"`
+	NextContinuationToken string         `xml:"NextContinuationToken,omitempty"`
+	StartAfter            string         `xml:"StartAfter,omitempty"`
+	Contents              []ObjectEntry  `xml:"Contents"`
+	CommonPrefixes        []CommonPrefix `xml:"CommonPrefixes,omitempty"`
 }
 
 type CommonPrefix struct {
@@ -48,11 +59,26 @@ type ObjectEntry struct {
 	StorageClass string `xml:"StorageClass"`
 }
 
+type LocationConstraint struct {
+	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ LocationConstraint"`
+	Region  string   `xml:",chardata"`
+}
+
 type InitiateMultipartUploadResult struct {
 	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ InitiateMultipartUploadResult"`
 	Bucket   string   `xml:"Bucket"`
 	Key      string   `xml:"Key"`
 	UploadId string   `xml:"UploadId"`
+}
+
+type CompleteMultipartUploadRequest struct {
+	XMLName xml.Name                `xml:"CompleteMultipartUpload"`
+	Parts   []CompleteMultipartPart `xml:"Part"`
+}
+
+type CompleteMultipartPart struct {
+	PartNumber int    `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
 }
 
 type CompleteMultipartUploadResult struct {

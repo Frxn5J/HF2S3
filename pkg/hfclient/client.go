@@ -273,7 +273,6 @@ func (c *Client) EnsureDatasetRepoWithVisibility(ctx context.Context, token, rep
 	return fmt.Errorf("ensure dataset repo status %d: %s", resp.StatusCode, string(body))
 }
 
-
 // Git LFS Batch Protocol Models
 type LfsBatchRequest struct {
 	Operation string         `json:"operation"`
@@ -332,7 +331,22 @@ type CommitPayload struct {
 	DeletedEntries []CommitDeletedEntry `json:"deletedEntries,omitempty"`
 }
 
+// UploadChunk uploads one chunk and commits it (one commit per chunk). Prefer
+// UploadLFS + CommitLFSFiles when several chunks go to the same repository, so
+// they share a single commit and stay under Hugging Face's commit rate limits.
 func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath string, chunkData []byte) error {
+	oid, err := c.UploadLFS(ctx, token, repoID, chunkData)
+	if err != nil {
+		return err
+	}
+	return c.CommitLFSFiles(ctx, token, repoID, fmt.Sprintf("Upload chunk %s", remotePath), []CommitLfsFile{
+		{Path: remotePath, Oid: oid, Size: int64(len(chunkData))},
+	})
+}
+
+// UploadLFS negotiates a Git LFS upload and transfers data to LFS storage. The
+// object is not visible in the repository until CommitLFSFiles references it.
+func (c *Client) UploadLFS(ctx context.Context, token, repoID string, chunkData []byte) (string, error) {
 	// SHA256 hex digest for Git LFS object ID
 	hash := sha256.Sum256(chunkData)
 	oid := hex.EncodeToString(hash[:])
@@ -351,7 +365,7 @@ func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath stri
 
 	batchBytes, err := json.Marshal(batchReqBody)
 	if err != nil {
-		return fmt.Errorf("marshal lfs batch request: %w", err)
+		return "", fmt.Errorf("marshal lfs batch request: %w", err)
 	}
 
 	bResp, err := c.doRequestWithRetry(ctx, func() (*http.Request, error) {
@@ -365,27 +379,27 @@ func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath stri
 		return req, nil
 	}, 3)
 	if err != nil {
-		return fmt.Errorf("lfs batch request to %s: %w", batchURL, err)
+		return "", fmt.Errorf("lfs batch request to %s: %w", batchURL, err)
 	}
 	defer bResp.Body.Close()
 
 	if bResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(bResp.Body)
-		return fmt.Errorf("lfs batch status %d: %s", bResp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(bResp.Body, 4096))
+		return "", fmt.Errorf("lfs batch status %d: %s", bResp.StatusCode, string(body))
 	}
 
 	var batchResp LfsBatchResponse
 	if err := json.NewDecoder(bResp.Body).Decode(&batchResp); err != nil {
-		return fmt.Errorf("decode lfs batch response: %w", err)
+		return "", fmt.Errorf("decode lfs batch response: %w", err)
 	}
 
 	if len(batchResp.Objects) == 0 {
-		return errors.New("empty objects list in lfs batch response")
+		return "", errors.New("empty objects list in lfs batch response")
 	}
 
 	lfsObj := batchResp.Objects[0]
 	if lfsObj.Error != nil {
-		return fmt.Errorf("lfs batch object error: %s (code %d)", lfsObj.Error.Message, lfsObj.Error.Code)
+		return "", fmt.Errorf("lfs batch object error: %s (code %d)", lfsObj.Error.Message, lfsObj.Error.Code)
 	}
 
 	// Upload binary payload to negotiated LFS storage endpoint
@@ -401,13 +415,13 @@ func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath stri
 			return req, nil
 		}, 3)
 		if err != nil {
-			return fmt.Errorf("lfs upload PUT request: %w", err)
+			return "", fmt.Errorf("lfs upload PUT request: %w", err)
 		}
 		defer putResp.Body.Close()
 
 		if putResp.StatusCode < 200 || putResp.StatusCode >= 300 {
-			body, _ := io.ReadAll(putResp.Body)
-			return fmt.Errorf("lfs upload storage status %d: %s", putResp.StatusCode, string(body))
+			body, _ := io.ReadAll(io.LimitReader(putResp.Body, 4096))
+			return "", fmt.Errorf("lfs upload storage status %d: %s", putResp.StatusCode, string(body))
 		}
 	}
 
@@ -433,29 +447,39 @@ func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath stri
 			return req, nil
 		}, 3)
 		if err != nil {
-			return fmt.Errorf("lfs verify request: %w", err)
+			return "", fmt.Errorf("lfs verify request: %w", err)
 		}
 		defer vResp.Body.Close()
 
 		if vResp.StatusCode < 200 || vResp.StatusCode >= 300 {
-			body, _ := io.ReadAll(vResp.Body)
-			return fmt.Errorf("lfs verify status %d: %s", vResp.StatusCode, string(body))
+			body, _ := io.ReadAll(io.LimitReader(vResp.Body, 4096))
+			return "", fmt.Errorf("lfs verify status %d: %s", vResp.StatusCode, string(body))
 		}
 	}
 
-	// Commit LFS pointer metadata to dataset repo
-	commitPayload := CommitPayload{
-		Summary: fmt.Sprintf("Upload chunk %s", remotePath),
-		LfsFiles: []CommitLfsFile{
-			{
-				Path: remotePath,
-				Oid:  oid,
-				Size: size,
-			},
-		},
-	}
+	return oid, nil
+}
 
-	commitBytes, err := json.Marshal(commitPayload)
+// maxFilesPerCommit bounds one commit's operation list.
+const maxFilesPerCommit = 500
+
+// CommitLFSFiles adds already-uploaded LFS objects to the repository's main
+// branch. Files are grouped into as few commits as possible.
+func (c *Client) CommitLFSFiles(ctx context.Context, token, repoID, summary string, files []CommitLfsFile) error {
+	for start := 0; start < len(files); start += maxFilesPerCommit {
+		end := start + maxFilesPerCommit
+		if end > len(files) {
+			end = len(files)
+		}
+		if err := c.commitOnce(ctx, token, repoID, CommitPayload{Summary: summary, LfsFiles: files[start:end]}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) commitOnce(ctx context.Context, token, repoID string, payload CommitPayload) error {
+	commitBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal commit payload: %w", err)
 	}
@@ -481,10 +505,9 @@ func (c *Client) UploadChunk(ctx context.Context, token, repoID, remotePath stri
 	defer cResp.Body.Close()
 
 	if cResp.StatusCode != http.StatusOK && cResp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(cResp.Body)
-		return fmt.Errorf("upload chunk commit status %d: %s", cResp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(cResp.Body, 4096))
+		return fmt.Errorf("commit status %d: %s", cResp.StatusCode, string(body))
 	}
-
 	return nil
 }
 
@@ -589,4 +612,34 @@ func (c *Client) GetRepoTreeSize(ctx context.Context, token, repoID string) (int
 		return 0, errors.New("cannot decode treesize response")
 	}
 	return result.Size, nil
+}
+
+// SuperSquash squashes the dataset's git history into a single commit. Old LFS
+// objects that are no longer referenced by the tip become unreachable, which
+// purges superseded (e.g. re-keyed) ciphertext and frees quota.
+func (c *Client) SuperSquash(ctx context.Context, token, repoID, message string) error {
+	body, err := json.Marshal(map[string]string{"message": message})
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/api/datasets/%s/super-squash/main", c.baseURL, repoID)
+	resp, err := c.doRequestWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	}, 3)
+	if err != nil {
+		return fmt.Errorf("super-squash request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("super-squash status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }

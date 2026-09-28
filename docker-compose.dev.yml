@@ -1,0 +1,16 @@
+# Local development override: publishes the port on loopback only and lets the
+# gateway start with insecure defaults. NEVER use this for real data.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  hf2s3:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - HF2S3_DEV=1
+      - HF2S3_MASTER_KEY=${HF2S3_MASTER_KEY:-}
+      - HF2S3_ACCESS_KEY=${HF2S3_ACCESS_KEY:-}
+      - HF2S3_SECRET_KEY=${HF2S3_SECRET_KEY:-}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - HF2S3_TRUST_PROXY=false

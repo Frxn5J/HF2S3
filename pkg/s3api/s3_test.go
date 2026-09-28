@@ -19,6 +19,7 @@ import (
 	"hf2s3/pkg/hfclient"
 	"hf2s3/pkg/hfstorage"
 	"hf2s3/pkg/models"
+	"hf2s3/pkg/sigv4"
 	"hf2s3/pkg/storage"
 )
 
@@ -124,7 +125,7 @@ func TestS3BucketAndObjectWorkflow(t *testing.T) {
 
 	// 1. Create Bucket
 	req := httptest.NewRequest(http.MethodPut, "/my-bucket", nil)
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=test-access-key/20260926/us-east-1/s3/aws4_request")
+	signTest(req)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -135,7 +136,7 @@ func TestS3BucketAndObjectWorkflow(t *testing.T) {
 	// 2. Put Object
 	bodyContent := []byte("Hello S3 R2 compatible world with Hugging Face multi-account backend!")
 	putReq := httptest.NewRequest(http.MethodPut, "/my-bucket/hello.txt", bytes.NewReader(bodyContent))
-	putReq.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=test-access-key/20260926/us-east-1/s3/aws4_request")
+	signTest(putReq)
 	putReq.Header.Set("Content-Type", "text/plain")
 	putRec := httptest.NewRecorder()
 	server.ServeHTTP(putRec, putReq)
@@ -150,7 +151,7 @@ func TestS3BucketAndObjectWorkflow(t *testing.T) {
 
 	// 3. Head Object
 	headReq := httptest.NewRequest(http.MethodHead, "/my-bucket/hello.txt", nil)
-	headReq.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=test-access-key/20260926/us-east-1/s3/aws4_request")
+	signTest(headReq)
 	headRec := httptest.NewRecorder()
 	server.ServeHTTP(headRec, headReq)
 
@@ -163,7 +164,7 @@ func TestS3BucketAndObjectWorkflow(t *testing.T) {
 
 	// 4. Get Object
 	getReq := httptest.NewRequest(http.MethodGet, "/my-bucket/hello.txt", nil)
-	getReq.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=test-access-key/20260926/us-east-1/s3/aws4_request")
+	signTest(getReq)
 	getRec := httptest.NewRecorder()
 	server.ServeHTTP(getRec, getReq)
 
@@ -177,7 +178,7 @@ func TestS3BucketAndObjectWorkflow(t *testing.T) {
 
 	// 5. List Objects
 	listReq := httptest.NewRequest(http.MethodGet, "/my-bucket?list-type=2", nil)
-	listReq.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=test-access-key/20260926/us-east-1/s3/aws4_request")
+	signTest(listReq)
 	listRec := httptest.NewRecorder()
 	server.ServeHTTP(listRec, listReq)
 
@@ -200,7 +201,7 @@ func TestS3AuthRejection(t *testing.T) {
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=wrong-key/20260926/us-east-1/s3/aws4_request")
+	signAs(req, "wrong-key", "test-secret-key", sigv4.UnsignedPayload)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -215,7 +216,7 @@ func TestS3ConcurrentUsersBenchmark(t *testing.T) {
 
 	// 1. Ensure test bucket exists
 	bReq := httptest.NewRequest(http.MethodPut, "/test", nil)
-	bReq.Header.Set("Authorization", "AWS test-access-key:sig")
+	signTest(bReq)
 	bRec := httptest.NewRecorder()
 	server.ServeHTTP(bRec, bReq)
 	if bRec.Code != http.StatusOK && bRec.Code != http.StatusConflict {
@@ -240,7 +241,7 @@ func TestS3ConcurrentUsersBenchmark(t *testing.T) {
 
 				// PUT Object
 				putReq := httptest.NewRequest(http.MethodPut, "/test/"+key, bytes.NewReader(payload))
-				putReq.Header.Set("Authorization", "AWS test-access-key:sig")
+				signTest(putReq)
 				putReq.Header.Set("Content-Type", "application/octet-stream")
 				putRec := httptest.NewRecorder()
 				server.ServeHTTP(putRec, putReq)
@@ -252,7 +253,7 @@ func TestS3ConcurrentUsersBenchmark(t *testing.T) {
 
 				// GET Object
 				getReq := httptest.NewRequest(http.MethodGet, "/test/"+key, nil)
-				getReq.Header.Set("Authorization", "AWS test-access-key:sig")
+				signTest(getReq)
 				getRec := httptest.NewRecorder()
 				server.ServeHTTP(getRec, getReq)
 
@@ -329,7 +330,7 @@ func TestMultiTierDirectDownloadRedirect(t *testing.T) {
 	locations := []models.ObjectLocation{
 		{
 			Tier:       models.TierCache,
-			AccountID:  testAcc.ID,
+			AccountID:  0, // 0 = the default (legacy) cache client
 			RemotePath: "videobucket/movies/sample.mp4",
 			SizeBytes:  1000,
 		},
@@ -376,5 +377,3 @@ func TestMultiTierDirectDownloadRedirect(t *testing.T) {
 		t.Errorf("Expected Cache-Status HIT on HEAD")
 	}
 }
-
-

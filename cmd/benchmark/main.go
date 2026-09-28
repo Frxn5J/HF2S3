@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"flag"
 	"fmt"
+	"hf2s3/pkg/sigv4"
 	"io"
 	"net/http"
 	"os"
@@ -33,13 +34,13 @@ type Config struct {
 }
 
 type StepStats struct {
-	Concurrency int
-	Duration    time.Duration
-	TotalOps    int64
-	SuccessOps  int64
-	ErrorOps    int64
+	Concurrency      int
+	Duration         time.Duration
+	TotalOps         int64
+	SuccessOps       int64
+	ErrorOps         int64
 	BytesTransferred int64
-	Latencies   []time.Duration
+	Latencies        []time.Duration
 }
 
 func (s *StepStats) OpsPerSec() float64 {
@@ -112,8 +113,9 @@ func NewBenchmarkClient(cfg Config) *BenchmarkClient {
 	}
 }
 
+// signRequest signs with AWS SigV4, as the gateway now verifies signatures.
 func (b *BenchmarkClient) signRequest(req *http.Request) {
-	req.Header.Set("Authorization", fmt.Sprintf("AWS %s:benchmarksig", b.cfg.AccessKey))
+	sigv4.SignRequest(req, b.cfg.AccessKey, b.cfg.SecretKey, "us-east-1", "s3", time.Now(), sigv4.UnsignedPayload)
 }
 
 func (b *BenchmarkClient) EnsureBucket(ctx context.Context) error {

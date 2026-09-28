@@ -1,53 +1,52 @@
-# HF2S3: Production Dockerfile for Coolify
-# Multi-stage lightweight build (<30MB image)
+# HF2S3 - production image (multi-stage, static binary, non-root at runtime)
 
-# Stage 1: Build the Go binary statically
-FROM golang:1.24-alpine AS builder
+# ---- Stage 1: build a static binary ------------------------------------------
+# For reproducible builds pin these images by digest in your registry mirror.
+FROM golang:1.24-alpine3.21 AS builder
 
 WORKDIR /build
 
-# Install CA certificates and git for dependencies
 RUN apk add --no-cache ca-certificates git
 
-# Cache Go modules layer
-COPY go.mod go.sum* ./
-RUN go mod download
+# Cache the module download layer
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
 
-# Copy source code
 COPY . .
 
-# Compile static binaries for Linux amd64
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -extldflags '-static'" -o /build/hf2s3 ./cmd/hf2s3
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -extldflags '-static'" -o /build/benchmark ./cmd/benchmark
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /build/hf2s3 ./cmd/hf2s3
 
-# Stage 2: Minimal runtime image
-FROM alpine:3.20
+# ---- Stage 2: minimal runtime ---------------------------------------------------
+FROM alpine:3.21
 
-# Install ca-certificates (vital for HTTPS calls to Hugging Face) and tzdata
-RUN apk add --no-cache ca-certificates tzdata
+# ca-certificates: HTTPS to Hugging Face. su-exec: drop root after fixing volume ownership.
+RUN apk add --no-cache ca-certificates tzdata su-exec \
+ && addgroup -S -g 10001 app \
+ && adduser -S -u 10001 -G app -h /app app \
+ && mkdir -p /data \
+ && chown app:app /data
 
 WORKDIR /app
-
-# Copy binaries from builder
 COPY --from=builder /build/hf2s3 /app/hf2s3
-COPY --from=builder /build/benchmark /app/benchmark
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
-# Create persistent data directory for SQLite metadata
-RUN mkdir -p /data
-
-# Default environment variables
 ENV PORT=8080 \
     HF2S3_DB=/data/hf2s3_metadata.db
 
-# Expose HTTP port (S3 Gateway & Web Console)
 EXPOSE 8080
 
-# Declare persistent volume mount point
+# Persistent metadata database and backups
 VOLUME ["/data"]
 
-# Coolify / Docker health check
-HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT:-8080}/api/health || exit 1
+# The readiness endpoint checks the database, not just that the process is up.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:${PORT:-8080}/api/ready" >/dev/null || exit 1
 
-# Run the HF2S3 Gateway
-ENTRYPOINT ["/app/hf2s3"]
+# Starts as root only to make /data writable by the app user (volumes created by
+# older releases are owned by root), then runs the gateway as uid 10001.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/app/hf2s3", "serve"]

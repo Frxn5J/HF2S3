@@ -139,7 +139,7 @@ func TestMultiTierLifecycle(t *testing.T) {
 			CipherSizeBytes: int64(len(encryptedBlob)),
 			AccountID:       testAcc.ID,
 			RemotePath:      remoteColdPath,
-			Sha256Hash:      "dummyhash",
+			Sha256Hash:      plainHash(plaintext),
 			CreatedAt:       time.Now(),
 		},
 	}
@@ -176,9 +176,9 @@ func TestMultiTierLifecycle(t *testing.T) {
 	}
 
 	// Verify unencrypted content is stored in cache
-	cachedData, existsInCache := cacheStorage["videos/trailer.mp4"]
+	cachedData, existsInCache := cacheStorage["v/1/videos/trailer.mp4"]
 	if !existsInCache {
-		t.Fatalf("Expected object in cacheStorage at 'videos/trailer.mp4'")
+		t.Fatalf("Expected object in cacheStorage at v/1/videos/trailer.mp4")
 	}
 	if string(cachedData) != string(plaintext) {
 		t.Errorf("Cache data should be unencrypted plaintext: got %q", string(cachedData))
@@ -207,7 +207,7 @@ func TestMultiTierLifecycle(t *testing.T) {
 	}
 
 	// Verify evicted from cache
-	if _, ok := cacheStorage["videos/trailer.mp4"]; ok {
+	if _, ok := cacheStorage["v/1/videos/trailer.mp4"]; ok {
 		t.Errorf("Object still present in cacheStorage after eviction")
 	}
 
@@ -377,7 +377,7 @@ func TestMultiBucketCacheRouting(t *testing.T) {
 			CipherSizeBytes: int64(len(encryptedBlob)),
 			AccountID:       testAcc.ID,
 			RemotePath:      remoteCold,
-			Sha256Hash:      "doc-sha256",
+			Sha256Hash:      plainHash(plainText),
 			CreatedAt:       time.Now(),
 		},
 	}
@@ -389,10 +389,10 @@ func TestMultiBucketCacheRouting(t *testing.T) {
 	}
 
 	// Verify cb1 received the unencrypted file
-	if _, ok := cacheStorage1["assets/doc.pdf"]; !ok {
+	if _, ok := cacheStorage1["v/1/assets/doc.pdf"]; !ok {
 		t.Errorf("Expected object in cacheStorage1 (least used bucket)")
 	}
-	if _, ok := cacheStorage2["assets/doc.pdf"]; ok {
+	if _, ok := cacheStorage2["v/1/assets/doc.pdf"]; ok {
 		t.Errorf("Object unexpectedly found in cacheStorage2")
 	}
 
@@ -416,7 +416,7 @@ func TestMultiBucketCacheRouting(t *testing.T) {
 		t.Fatalf("EvictCache: %v", err)
 	}
 
-	if _, ok := cacheStorage1["assets/doc.pdf"]; ok {
+	if _, ok := cacheStorage1["v/1/assets/doc.pdf"]; ok {
 		t.Errorf("Object still in cacheStorage1 after eviction")
 	}
 	cb1Evicted, _ := database.GetCacheBucketByID(ctx, cb1.ID)
@@ -424,4 +424,3 @@ func TestMultiBucketCacheRouting(t *testing.T) {
 		t.Errorf("Expected 0 used_bytes for cb1 after eviction, got %d", cb1Evicted.UsedBytes)
 	}
 }
-

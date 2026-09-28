@@ -1,221 +1,153 @@
-# HF2S3: Hugging Face Multi-Account & Multi-Tier S3/R2 Cloud Gateway
+# HF2S3: pasarela S3 multi-nivel sobre Hugging Face
 
-**HF2S3** es una pasarela de almacenamiento inteligente de alto rendimiento desarrollada en **Go** que unifica cuentas y repositorios de **Hugging Face** en una arquitectura de almacenamiento multi-nivel, compatible con la API **AWS S3 / Cloudflare R2** y con una API REST multimedia dedicada.
+**HF2S3** es una pasarela de almacenamiento escrita en **Go** con API compatible con **AWS S3 / Cloudflare R2**. Reparte los archivos entre varias cuentas de **Hugging Face** para sumar su cuota gratuita y servirlos como un único almacenamiento, pensado sobre todo para vídeo y otros archivos multimedia.
 
-El sistema implementa dos niveles de almacenamiento complementarios:
-1. **Tier 1 (Pool de Caché S3 Multi-Cuenta de Alta Velocidad)**: Permite registrar múltiples buckets de Hugging Face Storage (`s3.hf.co`). Si dispones de $N$ cuentas con 100 GB cada una, obtienes **$N \times 100\text{ GB}$ de capacidad agregada de caché S3 privada**. Los medios frecuentes se almacenan sin cifrar y se entregan directamente al cliente mediante **URLs prefirmadas AWS SigV4 (HTTP 302 / 307 Redirect)** específicas del bucket y cuenta que alberga cada archivo. El VPS **nunca consume ancho de banda de descarga** y las credenciales permanecen estrictamente seguras.
-2. **Tier 2 (Frío / Almacenamiento Masivo en Datasets)**: Datasets públicos en Hugging Face Hub que albergan copias maestras originales protegidas con **cifrado en reposo AES-256-GCM (Zero-Knowledge)**. Las descargas son libres, gratuitas y de alta velocidad sin cuotas de autenticación.
+- **Tier 2 (frío, copia maestra):** trozos de 32 MB cifrados con **AES-256-GCM** en datasets de Hugging Face de una o varias cuentas.
+- **Tier 1 (caché):** copia sin cifrar en buckets de Hugging Face Storage (`s3.hf.co`). Los clientes que usan enlaces firmados reciben un **302 directo** al bucket: los bytes no pasan por tu VPS.
 
-Al conectar múltiples cuentas de Hugging Face (tanto para Datasets fríos como para Buckets S3 de caché), HF2S3 balancea la carga inteligentemente entre ellas y permite gestionar todo en vivo desde el panel web sin reiniciar el servicio.
+> ⚠️ **Léelo antes de usarlo con datos que te importen** — ver [Modelo de amenazas y límites](#modelo-de-amenazas-y-límites).
 
 ---
 
-## Arquitectura Multi-Nivel Inteligente
+## Arquitectura
 
 ```
-                          +-------------------------------+
-                          |     Cliente / Reproductor     |
-                          | (Navegador, Rclone, Video UI) |
-                          +---------------+---------------+
-                                          |
-                        1. GET /media/{bucket}/{key}
-                        o AWS S3 GetObject
-                                          |
-                                  +-------v-------+
-                                  |     HF2S3     |
-                                  |    Gateway    |
-                                  +-------+-------+
-                                          |
-                       ¿Está en Caché S3? | (object_locations)
-                       +------------------+------------------+
-                       |                                     |
-               SÍ (Cache Hit)                          NO (Cache Miss)
-                       |                                     |
-        +--------------v--------------+       +--------------v--------------+
-        |  Genera URL Prefirmada      |       |  1. Descarga Chunks de Hub  |
-        |  SigV4 (15 min)             |       |  2. Descifra AES-256-GCM    |
-        |  Responde HTTP 302 Redirect |       |  3. Envía stream al cliente |
-        +--------------+--------------+       |  4. Asíncrono: Promueve     |
-                       |                      |     a Caché S3 (sin cifrar) |
-                       |                      +--------------+--------------+
-                       v                                     |
-        +-----------------------------+                      v
-        |     Hugging Face Storage    |       +-----------------------------+
-        |  (s3.hf.co / Bucket Privado)|       |    Hugging Face Datasets    |
-        |  Descarga directa sin VPS   |       | (Hub Público / AES-256-GCM) |
-        +-----------------------------+       +-----------------------------+
+   Cliente S3 (SDK/rclone)            Navegador / <video>
+        firma por cabecera             URL firmada (?X-Amz-Signature=…)
+                 \                          /
+                  v                        v
+              +----------------------------------+
+              |  HF2S3  ── verifica SigV4 ──     |   panel web: cookie HttpOnly,
+              |          (todas las rutas)       |   CSP, sin secretos en claro
+              +----------------+-----------------+
+                               |
+              ¿copia en caché? |
+             +-----------------+------------------+
+             | sí                                 | no
+   presign  → 302 (URL firmada)                    v
+   cabecera → proxy desde el bucket      descarga trozos del dataset,
+                                         verifica y descifra, sirve, y
+                                         promociona a caché en segundo plano
 ```
 
-### Principios Fundamentales
-- **Entrega Directa sin Paso por el VPS**: En el Tier 1, los bytes viajan directamente desde los servidores perimetrales de Hugging Face (`s3.hf.co`) hacia el cliente. Tu servidor/VPS solo procesa metadatos ligeros y firmas criptográficas.
-- **Seguridad Cero-Conocimiento en Nivel Frío**: Los datasets públicos contienen únicamente chunks opacos cifrados con AES-256-GCM y nonce aleatorio. Nadie puede inspeccionar el contenido sin la clave maestra `HF2S3_MASTER_KEY`.
-- **Desalojo Seguro (Eviction)**: Al desalojar archivos del Tier 1 (por políticas de espacio o manualmente desde el panel), solo se elimina la copia sin cifrar del bucket de caché. La **copia maestra original en el dataset público nunca se elimina**.
-- **Promoción Automática**: Cualquier petición a un objeto no presente en caché se descifra al vuelo, se entrega al cliente y se promueve en segundo plano al Tier 1.
+- Cada trozo se cifra con una clave derivada por HKDF de la clave maestra y **ligado a su ruta remota** (AAD): no se puede intercambiar un trozo por otro sin que falle la autenticación. Además se verifica el SHA-256 del texto plano.
+- Los metadatos (qué trozos forman cada objeto, dónde están) viven en **SQLite**, con migraciones versionadas. Los borrados remotos van por una **cola persistente con reintentos**, así que un fallo de Hugging Face no deja trozos huérfanos ni cuota consumida.
+- Los trozos de un objeto se confirman en **un commit por cuenta** (no uno por trozo) para no agotar el límite de commits de Hugging Face; si una cuenta responde con límite de peticiones, se conmuta a otra.
+- Subidas multipart, `Range`, peticiones condicionales, paginación de listados v1/v2 (con `encoding-type=url`), `aws-chunked` (AWS CLI v2, boto3 recientes) con verificación de firma por trozo y de checksums.
+
+## Seguridad: cómo se autentica cada cosa
+
+| Ruta | Autenticación |
+|---|---|
+| API S3 (`/bucket/clave`) | **SigV4 verificado de verdad** (cabecera o URL prefirmada): firma, desfase de reloj (±15 min), caducidad (≤ 7 días). Falla en cerrado: sin credenciales configuradas rechaza todo. |
+| `/media/{bucket}/{clave}` | Igual que la API S3: exige **URL prefirmada**. Se generan con cualquier SDK (`generate_presigned_url`) o desde el botón **Enlace** del panel. |
+| Panel `/api/*` | Cookie `HttpOnly; SameSite=Strict` (+ `Secure` bajo HTTPS), contraseña con PBKDF2-SHA256, límite de intentos, comprobación de origen (CSRF), CSP estricta, `nosniff`. |
+
+Los secretos guardados en la base de datos (tokens de HF, claves de buckets, secreto S3, claves legacy) se cifran con una clave derivada de `HF2S3_MASTER_KEY`. Las respuestas HTTP nunca incluyen secretos ni detalles internos de errores.
+
+## Modelo de amenazas y límites
+
+Lo que **sí** protege el diseño:
+
+- Quien descargue los datasets públicos de Hugging Face solo ve trozos opacos cifrados; sin `HF2S3_MASTER_KEY` no puede leerlos ni alterarlos sin que se detecte.
+- Quien conozca el Access Key ID (o adivine `/media/bucket/clave`) no puede leer, escribir ni borrar: hace falta una firma válida.
+- Un volcado de la base de datos o un backup no revela tokens ni secretos sin la clave maestra.
+
+Lo que **no** protege (y debes saber):
+
+- **La caché (Tier 1) está sin cifrar** en tus buckets de Hugging Face. Si esos buckets o sus claves se comprometen, se ve el contenido en claro.
+- **Quien controle el servidor** (o su entorno) tiene la clave maestra y ve todo.
+- Los datasets del nivel frío son **públicos por diseño** (descargas sin token). El cifrado es lo único que los protege: si la clave maestra fuera conocida (p. ej. la frase de ejemplo de versiones antiguas), el contenido queda expuesto. Por eso esta versión **exige** una clave aleatoria y ofrece `rekey` + `squash` para migrar (ver [COOLIFY.md](COOLIFY.md)).
+- Los enlaces prefirmados dan acceso a un objeto hasta que caducan a quien los tenga.
+- Los nombres/tamaños de archivo no están cifrados en Hugging Face (los trozos son `data/<uuid>.enc`, pero su número y tamaño sí se ven).
+- **Términos de uso de Hugging Face.** Usar varias cuentas para sumar cuota y alojar datos ajenos al ML en datasets públicos probablemente **incumple sus condiciones**. Si una cuenta se suspende, pierdes los datos alojados en ella (la copia maestra vive allí). No lo uses como único almacenamiento de datos que no puedas permitirte perder; mantén otra copia.
 
 ---
 
-## Características Principales
+## Puesta en marcha
 
-1. **Arquitectura Multi-Nivel y Ubicaciones Múltiples**:
-   - Seguimiento transaccional de estados de objetos en SQLite (`object_locations`).
-   - Soporte para políticas de desalojo LRU (*Least Recently Used*).
+Requisitos: Go 1.24+ (compilación) o Docker.
 
-2. **API Dual (S3 Compatible + REST Multimedia)**:
-   - **API S3 Estándar**: `GetObject`, `PutObject`, `HeadObject`, `DeleteObject`, `ListObjectsV2`, `ListBuckets`, `CreateBucket`, `DeleteBucket`.
-   - **API Multimedia Directa**: `/media/{bucket}/{key}` que responde con redirección HTTP 302 Found a la URL prefirmada si está en caché, o transmite directamente el contenido multimedia.
-   - Encabezados de diagnóstico: `X-HF2S3-Cache-Status: HIT | MISS` y `X-HF2S3-Tiers: cache,cold`.
+```bash
+go build -o hf2s3 ./cmd/hf2s3
 
-3. **Pool Distribuido de Datasets Públicos**:
-   - Agrupación automática de cuentas de Hugging Face.
-   - Algoritmo de balanceo por menor utilización relativa (*Least-Used Weighted*).
-   - Descargas de alta velocidad mediante endpoints de Hub sin necesidad de token de autorización para lecturas.
-
-4. **Cifrado Zero-Knowledge en Reposo (AES-256-GCM)**:
-   - Los archivos se fragmentan en chunks (por defecto 32 MB).
-   - Cada chunk se cifra localmente con **AES-256-GCM** y un Nonce aleatorio de 12 bytes.
-
-5. **Panel Web de Administración Moderno (Dark Glassmorphism)**:
-   - Monitoreo en tiempo real del pool y uso de almacenamiento.
-   - Indicador visual por archivo: badges `⚡ Caché S3` y `❄️ Dataset Público`.
-   - Botón **Stream** para reproducción o enlace directo.
-   - Acciones de **Desalojar Caché** y **Promover a Caché** con un clic.
-   - Configuración gráfica de credenciales S3 y parámetros de Hugging Face Storage.
-   - Respaldo íntegro y en caliente de base de datos SQLite (`.db`).
-
-6. **Despliegue Llave en Mano en Coolify y Docker**:
-   - Imagen Docker multi-etapa ultra ligera (<30 MB) con certificados CA y usuario no-root.
-   - Archivo `docker-compose.yml` preconfigurado con volumen persistente `/data` y healthcheck automático.
-
----
-
-## Requisitos y Compilación
-
-- **Go**: 1.22 o superior (probado en Go 1.24/1.27 Windows amd64 y Linux).
-- Compilación nativa pura sin dependencias externas pesadas.
-
-### Compilar el ejecutable
-
-```powershell
-go build -v -o hf2s3.exe ./cmd/hf2s3
+./hf2s3 keygen > .env.local         # secretos aleatorios (los avisos van a stderr)
+# edita el fichero: añade HF2S3_PUBLIC_URL y, si quieres, el bucket de caché
+set -a; . ./.env.local; set +a
+./hf2s3                              # = ./hf2s3 serve
 ```
 
----
+Sin esas variables el servicio no arranca. Para probar en local sin configurar nada: `HF2S3_DEV=1 ./hf2s3` (defaults inseguros; **nunca** con datos reales).
 
-## Configuración y Variables de Entorno
+Despliegue en producción: [COOLIFY.md](COOLIFY.md) (incluye la actualización desde versiones anteriores).
 
-Puedes configurar el gateway mediante archivo `.env` o flags de línea de comandos:
+### Comandos
 
-| Flag | Variable de Entorno | Valor por Defecto | Descripción |
-|---|---|---|---|
-| `-port` | `PORT` | `8080` | Puerto HTTP para la API S3, REST y Panel Web |
-| `-db` | `HF2S3_DB` | `hf2s3_metadata.db` | Ruta del archivo de base de datos SQLite |
-| `-chunk-size` | `HF2S3_CHUNK_SIZE_MB` | `32` | Tamaño del fragmento en Megabytes para el nivel frío |
-| `-access-key` | `HF2S3_ACCESS_KEY` | `hf2s3-access-key` | S3 Gateway Access Key ID |
-| `-secret-key` | `HF2S3_SECRET_KEY` | `hf2s3-secret-key` | S3 Gateway Secret Access Key |
-| `-master-key` | `HF2S3_MASTER_KEY` | (Generada) | Frase de paso para derivación de clave AES-256-GCM |
-| `-region` | `HF2S3_REGION` | `us-east-1` | Región S3 reportada |
-| `-admin-user` | `ADMIN_USERNAME` | `admin` | Usuario administrador del dashboard |
-| `-admin-pass` | `ADMIN_PASSWORD` | `admin123` | Contraseña del panel web |
-| `-hf-storage-endpoint` | `HF_STORAGE_ENDPOINT` | `https://s3.hf.co` | Endpoint S3 de Hugging Face Storage (Tier 1) |
-| `-hf-storage-region` | `HF_STORAGE_REGION` | `us-east-1` | Región de Hugging Face Storage |
-| `-hf-storage-access-key`| `HF_STORAGE_ACCESS_KEY` | `""` | Access Key ID de HF Storage (`HFAK...`) |
-| `-hf-storage-secret-key`| `HF_STORAGE_SECRET_KEY` | `""` | Secret Key de Hugging Face Storage |
-| `-hf-storage-bucket` | `HF_STORAGE_BUCKET` | `""` | Nombre del bucket de caché en Hugging Face |
+| Comando | Qué hace |
+|---|---|
+| `hf2s3` / `hf2s3 serve` | Ejecuta la pasarela. |
+| `hf2s3 keygen` | Imprime un `.env` con secretos aleatorios nuevos. |
+| `hf2s3 rekey [--dry-run]` | Re-cifra los trozos en formato/clave antiguos con la clave actual (reanudable). |
+| `hf2s3 squash [--account ID] --yes` | Purga el ciphertext antiguo del historial git de los datasets y libera cuota. |
+| `hf2s3 backup <fichero>` | Copia consistente de la base de datos. |
+| `hf2s3 restore <fichero[.enc]>` | Restaura (con el servicio parado; valida integridad y conserva `.pre-restore`). |
 
-> [!TIP]
-> **Configuración 100% desde la Interfaz Gráfica**:
-> No necesitas editar archivos `.env` ni pasar flags por terminal. Todo el sistema (credenciales de administrador, credenciales S3, buckets de caché HF Storage, clave maestra AES y tamaño de fragmentos) se puede configurar y actualizar directamente desde la pestaña **Configuración** del panel web (`http://localhost:8080/`), guardándose en la base de datos persistente SQLite.
+### Configuración
 
----
+Todo se define por variables de entorno (o `.env`); ver [`.env.example`](.env.example). Lo definido en el entorno **manda sobre la base de datos** y es de solo lectura en el panel.
 
-## Ejemplo de Configuración `.env` (Opcional)
+| Variable | Descripción |
+|---|---|
+| `HF2S3_MASTER_KEY` | **Obligatoria.** 32 bytes aleatorios (base64/hex). |
+| `HF2S3_ACCESS_KEY`, `HF2S3_SECRET_KEY` | **Obligatorias.** Credenciales de los clientes S3 (secreto ≥ 24 caracteres). |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | **Obligatorias.** Panel (contraseña ≥ 12 caracteres). |
+| `HF2S3_PUBLIC_URL` | URL externa (enlaces firmados y snippets). |
+| `HF2S3_TRUST_PROXY` | `true` tras un proxy que sobrescribe `X-Forwarded-*`. |
+| `S3_GET_REDIRECT` | `auto` (por defecto), `always`, `never`. |
+| `HF2S3_CORS_ORIGINS` | Orígenes de navegador permitidos (vacío = ninguno). |
+| `HF2S3_LEGACY_MASTER_KEYS` | Frases antiguas, solo para leer datos previos a esta versión. |
+| `HF2S3_DB`, `PORT`, `HF2S3_CHUNK_SIZE_MB`, `HF2S3_REGION` | Como siempre. |
+| `HF2S3_BACKUP_INTERVAL_HOURS`, `HF2S3_BACKUP_KEEP`, `HF2S3_BACKUP_DIR` | Backups automáticos. |
+| `HF2S3_METRICS_TOKEN` | Habilita `/metrics` (Prometheus). |
+| `HF2S3_LOG_FORMAT` / `HF2S3_LOG_LEVEL` | `json`/`text`, `debug`/`info`/`warn`/`error`. |
+| `HF_STORAGE_*` | Bucket de caché (también configurable en el panel, con varios buckets). |
+
+## Uso desde clientes
+
+Para SDKs y rclone la pasarela **sirve el contenido ella misma** (los clientes de firma por cabecera no siguen redirecciones de forma fiable); la redirección directa a Hugging Face se reserva para enlaces firmados.
 
 ```ini
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=clave-segura-panel-2026
-
-HF2S3_ACCESS_KEY=mi-access-key-s3
-HF2S3_SECRET_KEY=mi-secret-key-s3
-HF2S3_MASTER_KEY=mi-passphrase-maestra-aes-ultra-secreta
-
-HF2S3_DB=./hf2s3_metadata.db
-HF2S3_CHUNK_SIZE_MB=32
-PORT=8080
-
-# Hugging Face Storage Buckets (Tier 1 Cache)
-HF_STORAGE_ENDPOINT=https://s3.hf.co
-HF_STORAGE_REGION=us-east-1
-HF_STORAGE_ACCESS_KEY=HFAKxxxxxxxxxxxxxxxxxxxx
-HF_STORAGE_SECRET_KEY=yyyyyyyyyyyyyyyyyyyyyyyy
-HF_STORAGE_BUCKET=mi-cache-multimedia
-```
-
----
-
-## Conexión con Clientes S3
-
-### 1. Rclone (Montar como Disco Local)
-
-```ini
+# rclone
 [hf2s3]
 type = s3
 provider = Other
-env_auth = false
-access_key_id = hf2s3-access-key
-secret_access_key = hf2s3-secret-key
-endpoint = http://localhost:8080
+access_key_id = <HF2S3_ACCESS_KEY>
+secret_access_key = <HF2S3_SECRET_KEY>
+endpoint = https://s3.tudominio.com
 region = us-east-1
 ```
 
-Comandos útiles:
-```powershell
-rclone lsd hf2s3:
-rclone mount hf2s3:mi-bucket X: --vfs-cache-mode full
+```python
+# boto3: enlace de 1 hora para un <video>
+url = s3.generate_presigned_url('get_object', Params={'Bucket': 'media', 'Key': 'clip.mp4'}, ExpiresIn=3600)
 ```
 
-### 2. AWS CLI
+Para usar el alias `/media`, apunta el cliente a `https://s3.tudominio.com/media` como endpoint (estilo *path*) o usa el botón **Enlace** del panel; el resultado se reproduce con saltos (`Range`) desde la caché o el nivel frío.
 
-```powershell
-export AWS_ACCESS_KEY_ID="hf2s3-access-key"
-export AWS_SECRET_ACCESS_KEY="hf2s3-secret-key"
+No implementado (responde `501 NotImplemented` en lugar de aparentar soporte): `CopyObject`/`UploadPartCopy`, versionado, ACL, etiquetas, políticas, `ListParts`/`ListMultipartUploads`. Los buckets llamados `media`, `api` y `static` están reservados.
 
-# Listar objetos
-aws --endpoint-url=http://localhost:8080 s3 ls s3://mi-bucket/
+## Desarrollo
 
-# Descargar objeto
-aws --endpoint-url=http://localhost:8080 s3 cp s3://mi-bucket/video.mp4 ./video.mp4
+```bash
+go vet ./...
+go test ./...                 # en Linux/macOS añade -race
+node --check pkg/dashboard/static/app.js
 ```
 
-### 3. API REST Multimedia para Navegadores
+Los tests incluyen **vectores oficiales de AWS** (firma prefirmada, GET con `Range`, PUT con `$`, subida por trozos firmados y CRC64-NVME), migración desde una base de datos antigua, re-cifrado, limpieza de huérfanos y el arranque seguro.
 
-Puedes incrustar o transmitir directamente los archivos en reproductores HTML5 o aplicaciones frontend:
+Estructura: `cmd/hf2s3` (arranque y subcomandos), `pkg/sigv4`, `pkg/s3api` (verificación de firma, `aws-chunked`, rutas S3), `pkg/storage` (pool, caché, GC, re-cifrado), `pkg/crypto` (anillo de claves, cifrado de secretos), `pkg/db` (SQLite y migraciones), `pkg/hfclient` / `pkg/hfstorage` (clientes de Hugging Face), `pkg/dashboard` (panel), `pkg/config`, `pkg/backup`, `pkg/metrics`.
 
-```html
-<!-- Si el archivo está en caché S3, HF2S3 redirige al instante (302) a s3.hf.co -->
-<video controls src="http://localhost:8080/media/mi-bucket/video.mp4"></video>
-```
+## Licencia
 
----
-
-## Estructura del Proyecto
-
-- [`cmd/hf2s3/main.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/cmd/hf2s3/main.go): Inicialización del sistema, persistencia y enrutador unificado.
-- [`pkg/hfstorage/s3client.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/hfstorage/s3client.go): Cliente puro en Go para Hugging Face Storage Buckets con firmas AWS SigV4 y presign de URLs.
-- [`pkg/storage/multitier.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/storage/multitier.go): Orquestación multi-nivel, auto-promoción, resolución de URLs presigned y desalojo seguro de caché.
-- [`pkg/storage/pool.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/storage/pool.go): Motor de distribución multi-cuenta de datasets, fragmentación y streaming.
-- [`pkg/hfclient/client.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/hfclient/client.go): Cliente API de Hugging Face (datasets públicos y privados, commit y descarga).
-- [`pkg/crypto/cipher.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/crypto/cipher.go): Cifrado y descifrado autenticado AES-256-GCM.
-- [`pkg/db/db.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/db/db.go): Persistencia SQLite con soporte para ubicaciones multi-nivel (`object_locations`).
-- [`pkg/s3api/router.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/s3api/router.go): Enrutador S3 compatible y ruta `/media/{bucket}/{key}`.
-- [`pkg/dashboard/api.go`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/dashboard/api.go): Endpoints REST del panel y gestión de configuraciones de caché.
-- [`pkg/dashboard/static/`](file:///c:/Users/Desarrollo/Documents/OhMyVita/HF2S3/pkg/dashboard/static/): SPA del panel de control web (`index.html`, `style.css`, `app.js`).
-
----
-
-## Pruebas y Validación
-
-Ejecutar la suite completa de pruebas unitarias y de integración:
-
-```powershell
-go test -v ./...
-```
+Ver [LICENSE](LICENSE).
