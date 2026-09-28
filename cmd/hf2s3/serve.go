@@ -71,6 +71,12 @@ func (a *App) instrument(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
+		// Draining before a restart: new work is refused so in-flight requests can finish.
+		if a.draining.Load() && r.URL.Path != "/api/health" && r.URL.Path != "/api/ready" {
+			sw.Header().Set("Retry-After", "20")
+			http.Error(sw, "the service is restarting, retry shortly", http.StatusServiceUnavailable)
+			return
+		}
 		defer func() {
 			if rec := recover(); rec != nil {
 				if rec == http.ErrAbortHandler {
@@ -210,6 +216,11 @@ func (a *App) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("shutting down: draining in-flight requests", "timeout", a.Cfg.ShutdownTimeout.String())
+	case <-a.restartCh:
+		// Give the HTTP response that requested the restart time to reach the browser.
+		time.Sleep(500 * time.Millisecond)
+		slog.Warn("restarting to apply a database restore: draining in-flight requests", "timeout", a.Cfg.ShutdownTimeout.String())
+		serveErr = ErrRestart
 	case serveErr = <-errCh:
 		slog.Error("server stopped unexpectedly", "err", serveErr)
 	}

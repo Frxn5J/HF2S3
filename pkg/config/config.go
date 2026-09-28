@@ -60,6 +60,8 @@ type Config struct {
 	HFStorageSecretKey string
 	HFStorageBucket    string
 
+	RestoreMaxMB int // largest backup accepted by the console restore
+
 	BackupDir      string
 	BackupInterval time.Duration
 	BackupKeep     int
@@ -183,6 +185,9 @@ func FromEnvironment(get Getenv) (*Config, error) {
 	}
 
 	c.BackupDir = firstOr(get, "", "HF2S3_BACKUP_DIR")
+	if c.RestoreMaxMB, err = atoi(get, 1024, "HF2S3_RESTORE_MAX_MB"); err != nil {
+		return nil, err
+	}
 	hours, err := atoi(get, 24, "HF2S3_BACKUP_INTERVAL_HOURS")
 	if err != nil {
 		return nil, err

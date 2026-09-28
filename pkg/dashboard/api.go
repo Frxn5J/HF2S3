@@ -63,6 +63,7 @@ type DashboardHandler struct {
 	credentialsUpdater func(accessKey, secretKey string)
 	publicURL          string
 	envManaged         map[string]bool
+	restore            RestoreManager
 
 	drainMu sync.Mutex
 	drains  map[int64]*drainState
@@ -188,8 +189,13 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/settings", auth(h.handleUpdateSettings))
 	mux.HandleFunc("POST /api/settings/rotate-s3-secret", auth(h.handleRotateS3Secret))
 
-	// Database backup (restore is a CLI operation: `hf2s3 restore`)
+	// Database backup and restore. Restoring stages the uploaded file, then applies it
+	// with a controlled restart once the administrator confirms (see restore.go).
 	mux.HandleFunc("GET /api/admin/backup", auth(h.handleDownloadBackup))
+	mux.HandleFunc("GET /api/admin/restore", auth(h.handleRestoreStatus))
+	mux.HandleFunc("POST /api/admin/restore", auth(h.handleRestoreUpload))
+	mux.HandleFunc("POST /api/admin/restore/apply", auth(h.handleRestoreApply))
+	mux.HandleFunc("DELETE /api/admin/restore", auth(h.handleRestoreCancel))
 
 	// Static UI assets and SPA fallback
 	mux.Handle("/", h.fileServer)

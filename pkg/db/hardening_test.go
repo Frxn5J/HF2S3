@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -387,4 +388,95 @@ func TestFutureSchemaVersionIsRefused(t *testing.T) {
 	if _, err := Open(path); err == nil {
 		t.Fatal("a database from a newer release must be refused")
 	}
+}
+
+func TestInspectBackup(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// A healthy database with data.
+	good := filepath.Join(dir, "good.db")
+	d, err := Open(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc := seedAccountAndBucketOn(t, d)
+	obj := &models.Object{Bucket: "bkt", Key: "k", Size: 10, ETag: `"e"`, ContentType: "x"}
+	if err := d.SaveObjectWithChunks(ctx, obj, []models.Chunk{chunkFor(acc, 0, "data/a.enc")}); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(dir, "snap.db")
+	if err := d.BackupToFile(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	info, err := InspectBackup(ctx, snap)
+	if err != nil {
+		t.Fatalf("a valid snapshot must inspect fine: %v", err)
+	}
+	if info.Accounts != 1 || info.Buckets != 1 || info.Objects != 1 || info.Chunks != 1 || info.TotalBytes != 10 || info.SchemaVersion != SchemaVersion() {
+		t.Fatalf("unexpected info: %+v", info)
+	}
+	if info.LatestObject.IsZero() {
+		t.Fatal("latest object date missing")
+	}
+
+	// Not a database at all.
+	junk := filepath.Join(dir, "junk.db")
+	_ = os.WriteFile(junk, []byte("definitely not sqlite"), 0o600)
+	if _, err := InspectBackup(ctx, junk); !errors.Is(err, ErrNotHF2SDatabase) {
+		t.Fatalf("junk must be ErrNotHF2SDatabase, got %v", err)
+	}
+
+	// A valid SQLite file that is not ours.
+	other := filepath.Join(dir, "other.db")
+	raw, _ := sql.Open("sqlite", other)
+	_, _ = raw.Exec(`CREATE TABLE t (x)`)
+	raw.Close()
+	if _, err := InspectBackup(ctx, other); !errors.Is(err, ErrNotHF2SDatabase) {
+		t.Fatalf("a foreign sqlite file must be refused, got %v", err)
+	}
+
+	// Newer than this binary.
+	future := filepath.Join(dir, "future.db")
+	data, _ := os.ReadFile(snap)
+	_ = os.WriteFile(future, data, 0o600)
+	raw, _ = sql.Open("sqlite", future)
+	_, _ = raw.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion()+3))
+	raw.Close()
+	if _, err := InspectBackup(ctx, future); err == nil || !errors.Is(err, ErrNewerSchema) {
+		t.Fatalf("a newer schema must be refused, got %v", err)
+	}
+
+	// Truncated file.
+	trunc := filepath.Join(dir, "trunc.db")
+	_ = os.WriteFile(trunc, data[:len(data)/2], 0o600)
+	if _, err := InspectBackup(ctx, trunc); err == nil {
+		t.Fatal("a truncated database must be refused")
+	}
+
+	// An old, unversioned database (user_version 0) is accepted: migrations run on start-up.
+	legacy := filepath.Join(dir, "legacy.db")
+	_ = os.WriteFile(legacy, data, 0o600)
+	raw, _ = sql.Open("sqlite", legacy)
+	_, _ = raw.Exec(`PRAGMA user_version = 0`)
+	raw.Close()
+	if _, err := InspectBackup(ctx, legacy); err != nil {
+		t.Fatalf("an unversioned legacy database must be accepted: %v", err)
+	}
+}
+
+// seedAccountAndBucketOn is seedAccountAndBucket for a caller-owned database.
+func seedAccountAndBucketOn(t *testing.T, d *DB) *models.Account {
+	t.Helper()
+	ctx := context.Background()
+	acc := &models.Account{Name: "a", Username: "u", Token: "hf_plain_token", RepoName: "u/r", IsActive: true}
+	if err := d.CreateAccount(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatal(err)
+	}
+	return acc
 }

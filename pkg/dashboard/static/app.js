@@ -1240,6 +1240,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       renderSnippet('rclone');
+      loadRestoreStatus();
     } catch (e) {
       console.error('Failed to load settings', e);
     }
@@ -1422,6 +1423,198 @@ document.addEventListener('DOMContentLoaded', () => {
         showToast('Error de comunicación con el gateway', 'error');
       }
     });
+  }
+
+  // --- DATABASE RESTORE (upload -> validate -> confirm -> controlled restart) ---
+  const formRestoreUpload = document.getElementById('formRestoreUpload');
+  const restoreFileInput = document.getElementById('restoreFileInput');
+  const btnChooseRestoreFile = document.getElementById('btnChooseRestoreFile');
+  const restoreFileName = document.getElementById('restoreFileName');
+  const btnUploadRestore = document.getElementById('btnUploadRestore');
+  const restoreUploadProgress = document.getElementById('restoreUploadProgress');
+  const restoreUploadBar = document.getElementById('restoreUploadBar');
+  const restorePendingBox = document.getElementById('restorePendingBox');
+  const restorePendingFile = document.getElementById('restorePendingFile');
+  const restoreSummaryList = document.getElementById('restoreSummaryList');
+  const restoreWarningList = document.getElementById('restoreWarningList');
+  const restoreConfirmPass = document.getElementById('restoreConfirmPass');
+  const btnApplyRestore = document.getElementById('btnApplyRestore');
+  const btnCancelRestore = document.getElementById('btnCancelRestore');
+  const restoreLastResult = document.getElementById('restoreLastResult');
+  const restoreLastResultText = document.getElementById('restoreLastResultText');
+  const restoreUnavailable = document.getElementById('restoreUnavailable');
+  const restoreRestartOverlay = document.getElementById('restoreRestartOverlay');
+  const restoreRestartText = document.getElementById('restoreRestartText');
+  let restoreMaxMB = 1024;
+
+  // Everything below is written with textContent: file names and messages are untrusted.
+  function addListItem(list, text) {
+    const li = document.createElement('li');
+    li.textContent = text;
+    list.appendChild(li);
+  }
+
+  function renderPendingRestore(p) {
+    if (!p) {
+      restorePendingBox.classList.add('hidden');
+      return;
+    }
+    restorePendingFile.textContent = p.filename + (p.encrypted ? ' (cifrada)' : '');
+    restoreSummaryList.textContent = '';
+    restoreWarningList.textContent = '';
+    addListItem(restoreSummaryList, `Objetos: ${p.objects} en la copia (ahora: ${p.current_objects})`);
+    addListItem(restoreSummaryList, `Cuentas de Hugging Face: ${p.accounts} en la copia (ahora: ${p.current_accounts})`);
+    addListItem(restoreSummaryList, `Buckets: ${p.buckets} · Fragmentos: ${p.chunks} · Datos: ${formatBytes(p.total_bytes)}`);
+    if (p.latest_object_at) {
+      addListItem(restoreSummaryList, `Último objeto de la copia: ${new Date(p.latest_object_at).toLocaleString()}`);
+    }
+    (p.warnings || []).forEach(w => addListItem(restoreWarningList, '⚠ ' + w));
+    restorePendingBox.classList.remove('hidden');
+  }
+
+  async function loadRestoreStatus() {
+    if (!restorePendingBox) return;
+    try {
+      const res = await fetch('/api/admin/restore');
+      if (res.status === 501) {
+        restoreUnavailable.classList.remove('hidden');
+        formRestoreUpload.classList.add('hidden');
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      restoreMaxMB = data.max_upload_mb || restoreMaxMB;
+      renderPendingRestore(data.pending);
+      if (data.last_result) {
+        const r = data.last_result;
+        restoreLastResultText.textContent = `Última restauración (${new Date(r.at).toLocaleString()}): ${r.message}`;
+        restoreLastResult.classList.remove('hidden');
+      } else {
+        restoreLastResult.classList.add('hidden');
+      }
+    } catch (e) {
+      console.error('Failed to load restore status', e);
+    }
+  }
+
+  if (btnChooseRestoreFile) {
+    btnChooseRestoreFile.addEventListener('click', () => restoreFileInput.click());
+    restoreFileInput.addEventListener('change', () => {
+      const f = restoreFileInput.files[0];
+      if (f) {
+        restoreFileName.textContent = `${f.name} (${formatBytes(f.size)})`;
+        btnUploadRestore.disabled = false;
+      } else {
+        restoreFileName.textContent = 'Ningún archivo seleccionado';
+        btnUploadRestore.disabled = true;
+      }
+    });
+
+    formRestoreUpload.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const file = restoreFileInput.files[0];
+      if (!file) return;
+      if (file.size > restoreMaxMB * 1024 * 1024) {
+        showToast(`El archivo supera el máximo permitido (${restoreMaxMB} MB)`, 'error');
+        return;
+      }
+
+      const form = new FormData();
+      form.append('database', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/admin/restore');
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) restoreUploadBar.style.width = Math.round((ev.loaded / ev.total) * 100) + '%';
+      };
+      xhr.onloadstart = () => {
+        btnUploadRestore.disabled = true;
+        btnUploadRestore.textContent = 'Subiendo y validando…';
+        restoreUploadProgress.classList.remove('hidden');
+        restoreUploadBar.style.width = '0%';
+      };
+      xhr.onloadend = () => {
+        btnUploadRestore.textContent = 'Subir y validar';
+        btnUploadRestore.disabled = !restoreFileInput.files[0];
+        restoreUploadProgress.classList.add('hidden');
+        let body = {};
+        try { body = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+        if (xhr.status === 401) { showLoginOverlay(); return; }
+        if (xhr.status === 200) {
+          showToast('Copia validada. Revisa el resumen y confirma para restaurar.');
+          renderPendingRestore(body);
+          restoreFileInput.value = '';
+          restoreFileName.textContent = 'Ningún archivo seleccionado';
+          btnUploadRestore.disabled = true;
+        } else {
+          showToast(body.error || 'No se pudo validar la copia de seguridad', 'error');
+        }
+      };
+      xhr.onerror = () => showToast('Error de comunicación durante la subida', 'error');
+      xhr.send(form);
+    });
+
+    btnCancelRestore.addEventListener('click', async () => {
+      await fetch('/api/admin/restore', { method: 'DELETE' });
+      restoreConfirmPass.value = '';
+      renderPendingRestore(null);
+      showToast('Restauración cancelada; no se ha modificado nada');
+    });
+
+    btnApplyRestore.addEventListener('click', async () => {
+      if (!restoreConfirmPass.value) {
+        showToast('Introduce tu contraseña de administrador para confirmar', 'error');
+        return;
+      }
+      if (!confirm('¿Reemplazar la base de datos actual por la copia validada? El servicio se reiniciará.')) return;
+
+      btnApplyRestore.disabled = true;
+      try {
+        const res = await fetch('/api/admin/restore/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ current_password: restoreConfirmPass.value })
+        });
+        const data = await res.json().catch(() => ({}));
+        restoreConfirmPass.value = '';
+        if (!res.ok) {
+          showToast(data.error || 'No se pudo iniciar la restauración', 'error');
+          btnApplyRestore.disabled = false;
+          return;
+        }
+        waitForRestart();
+      } catch (e) {
+        showToast('Error de comunicación con el gateway', 'error');
+        btnApplyRestore.disabled = false;
+      }
+    });
+  }
+
+  // After confirming, wait for the service to go down and come back, then reload
+  // (the session does not survive the restart, so the login screen appears).
+  function waitForRestart() {
+    restorePendingBox.classList.add('hidden');
+    restoreRestartOverlay.classList.remove('hidden');
+    const started = Date.now();
+    let sawDown = false;
+    const timer = setInterval(async () => {
+      const elapsed = (Date.now() - started) / 1000;
+      try {
+        const res = await originalFetch('/api/ready', { cache: 'no-store' });
+        if (res.ok && (sawDown || elapsed > 12)) {
+          clearInterval(timer);
+          restoreRestartText.textContent = 'Servicio de nuevo en línea. Recargando…';
+          setTimeout(() => window.location.reload(), 800);
+        } else if (!res.ok) {
+          sawDown = true;
+        }
+      } catch (e) {
+        sawDown = true;
+      }
+      if (elapsed > 120) {
+        clearInterval(timer);
+        restoreRestartText.textContent = 'El servicio tarda en volver. Comprueba los registros del servidor y recarga la página.';
+      }
+    }, 1000);
   }
 
   // Global Refresh

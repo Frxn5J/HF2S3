@@ -90,7 +90,7 @@ Despliegue en producción: [COOLIFY.md](COOLIFY.md) (incluye la actualización d
 | `hf2s3 rekey [--dry-run]` | Re-cifra los trozos en formato/clave antiguos con la clave actual (reanudable). |
 | `hf2s3 squash [--account ID] --yes` | Purga el ciphertext antiguo del historial git de los datasets y libera cuota. |
 | `hf2s3 backup <fichero>` | Copia consistente de la base de datos. |
-| `hf2s3 restore <fichero[.enc]>` | Restaura (con el servicio parado; valida integridad y conserva `.pre-restore`). |
+| `hf2s3 restore <fichero[.enc]>` | Restaura desde la línea de comandos (con el servicio parado). Desde el panel: Configuración → *Restaurar desde un respaldo* (validación previa, confirmación con contraseña y reinicio automático). |
 
 ### Configuración
 

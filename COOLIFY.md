@@ -127,7 +127,19 @@ su-exec app /app/hf2s3 squash --yes      # reescribe el historial (irreversible)
 
 ### Restaurar
 
-Con el servicio **parado** en Coolify (la restauración no se hace en caliente), en el servidor y con un contenedor de un solo uso que monta el mismo volumen:
+**Desde el panel (recomendado):** Configuración → *Restaurar desde un respaldo*.
+
+1. Selecciona el archivo (`.db`, o `.db.enc` si es la copia cifrada del bucket) y pulsa **Subir y validar**. Se comprueba **todo antes de tocar nada**: que es una base de HF2S3 íntegra, que no es de una versión más nueva, que la clave maestra actual la puede abrir y que el servicio arrancaría con ella (credenciales incluidas).
+2. Revisa el resumen (objetos y cuentas de la copia frente a los actuales) y los avisos. Una copia más antigua no tiene lo subido después: esos fragmentos quedarán huérfanos en Hugging Face.
+3. Escribe tu contraseña de administrador y pulsa **Restaurar y reiniciar**. El servicio deja de aceptar peticiones nuevas, termina las que están en curso, se reinicia solo (en el contenedor mantiene el mismo proceso, no hace falta que Coolify lo levante) y en unos segundos la página se recarga; tendrás que volver a iniciar sesión.
+
+Garantías:
+- La base **actual** se conserva como `hf2s3_metadata.db.pre-restore-<fecha>` en `/data` (se guardan las 3 últimas).
+- Si la restaurada pasara la validación pero aun así no arrancara, el servicio **vuelve solo a la anterior** y lo indica en el panel (la rechazada queda como `.rejected-<fecha>`).
+- Una copia de una versión anterior (con la clave maestra en claro) se restaura bien: esa clave se guarda cifrada como clave legacy; después ejecuta `hf2s3 rekey`.
+- Tamaño máximo de subida: `HF2S3_RESTORE_MAX_MB` (1024 por defecto). Las copias cifradas (`.enc`) de más de 256 MB se restauran por línea de comandos.
+
+**Por línea de comandos** (si el panel no es accesible): con el servicio **parado** en Coolify (la restauración no se hace en caliente), en el servidor y con un contenedor de un solo uso que monta el mismo volumen:
 
 ```bash
 docker run --rm -v hf2s3_data:/data -v "$PWD":/in hf2s3:latest \

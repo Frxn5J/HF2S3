@@ -70,6 +70,24 @@ func Encrypt(kr *crypto.Keyring, plain []byte) ([]byte, error) {
 // IsEncrypted reports whether data is an encrypted backup produced by Encrypt.
 func IsEncrypted(data []byte) bool { return bytes.HasPrefix(data, []byte(encryptedMagic)) }
 
+// DecryptAny opens an encrypted backup made under the current master key or any
+// previous one the keyring knows about (after a key rotation).
+func DecryptAny(kr *crypto.Keyring, blob []byte) ([]byte, error) {
+	if !IsEncrypted(blob) {
+		return nil, errors.New("not an encrypted HF2S3 backup")
+	}
+	keys := append([][]byte{kr.SettingsKey()}, kr.PreviousSettingsKeys()...)
+	var lastErr error
+	for _, k := range keys {
+		plain, err := crypto.DecryptAAD(blob[len(encryptedMagic):], k, []byte(backupAAD))
+		if err == nil {
+			return plain, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // Decrypt opens an encrypted backup with the master key it was made with.
 func Decrypt(kr *crypto.Keyring, blob []byte) ([]byte, error) {
 	if !IsEncrypted(blob) {
