@@ -129,6 +129,10 @@ func (c *Client) doRequestWithRetry(ctx context.Context, makeReq func() (*http.R
 			token = strings.TrimPrefix(auth, "Bearer ")
 		}
 
+		if token != "" && c.rateLimiter != nil {
+			c.rateLimiter.RecordRequest(token, req)
+		}
+
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err

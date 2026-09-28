@@ -187,6 +187,7 @@
               <tr>
                 <th>Cuenta / Usuario</th>
                 <th>Repositorio Público</th>
+                <th>Límites API (5 min)</th>
                 <th>Espacio Usado</th>
                 <th>Capacidad / Cuota</th>
                 <th>Estado</th>
@@ -555,6 +556,56 @@
           <button type="button" class="btn btn-secondary" data-close="modalAddAccount">Cancelar</button>
           <button type="submit" class="btn btn-primary" id="btnSubmitAccount">
             <span class="btn-text">Verificar y Conectar</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT ACCOUNT -->
+  <div class="modal-overlay hidden" id="modalEditAccount">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Editar Cuenta Hugging Face</h3>
+        <button class="modal-close" data-close="modalEditAccount">&times;</button>
+      </div>
+      <form id="formEditAccount">
+        <input type="hidden" id="editAccountIdInput" />
+        <div class="form-group">
+          <label>Nombre Identificador de Cuenta <span class="required">*</span></label>
+          <input type="text" class="input-text" id="editAccountNameInput" required />
+        </div>
+        <div class="form-group">
+          <label>Usuario Hugging Face</label>
+          <input type="text" class="input-text" id="editAccountUsernameInput" readonly style="opacity:0.75; cursor:not-allowed;" />
+          <span class="field-hint">Usuario asociado a la cuenta.</span>
+        </div>
+        <div class="form-group">
+          <label>Nuevo Token de Acceso (Opcional)</label>
+          <input type="password" class="input-text" id="editAccountTokenInput" placeholder="Dejar en blanco para conservar el actual" />
+          <span class="field-hint">Introduce un nuevo token solo si deseas rotar las credenciales (Write permission). Se verificará automáticamente con HF.</span>
+        </div>
+        <div class="form-group">
+          <label>Nombre del Repositorio Dataset Público <span class="required">*</span></label>
+          <input type="text" class="input-text" id="editAccountRepoInput" required />
+          <span class="field-hint">Dataset público para fragmentos cifrados en AES-256-GCM. Si cambias de repositorio, se verificará automáticamente.</span>
+        </div>
+        <div class="form-group">
+          <label>Capacidad / Cuota Estimada (GB)</label>
+          <input type="number" class="input-text" id="editAccountQuotaInput" min="0" placeholder="0 para cuota dinámica / elástica" />
+          <span class="field-hint">0 para cuota <strong>dinámica / elástica</strong> (sin límite fijo).</span>
+        </div>
+        <div class="form-group">
+          <label>Estado del Servicio</label>
+          <select class="input-text" id="editAccountStatusInput">
+            <option value="true">Activo / En Servicio</option>
+            <option value="false">Desactivado / Pausado</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="modalEditAccount">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitEditAccount">
+            <span class="btn-text">Guardar Cambios</span>
           </button>
         </div>
       </form>

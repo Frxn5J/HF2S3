@@ -111,3 +111,46 @@ func TestRatePacer(t *testing.T) {
 		t.Errorf("expected paced delay, but took %v", elapsed)
 	}
 }
+
+func TestTokenRateLimiter_5MinIntervalAndStats(t *testing.T) {
+	limiter := NewTokenRateLimiter()
+	token := "hf_token_stats_test"
+
+	stats0 := limiter.GetStats(token)
+	if stats0.APIRemaining != 1000 || stats0.APILimit != 1000 {
+		t.Errorf("expected 1000/1000 API, got %d/%d", stats0.APIRemaining, stats0.APILimit)
+	}
+	if stats0.ResolversRemaining != 5000 || stats0.ResolversLimit != 5000 {
+		t.Errorf("expected 5000/5000 Resolvers, got %d/%d", stats0.ResolversRemaining, stats0.ResolversLimit)
+	}
+	if stats0.PagesRemaining != 200 || stats0.PagesLimit != 200 {
+		t.Errorf("expected 200/200 Pages, got %d/%d", stats0.PagesRemaining, stats0.PagesLimit)
+	}
+	if stats0.WindowSeconds != 300 {
+		t.Errorf("expected window of 300s (5 min), got %d", stats0.WindowSeconds)
+	}
+
+	// Dispatch an API request
+	reqAPI, _ := http.NewRequest("GET", "https://huggingface.co/api/datasets/foo", nil)
+	limiter.RecordRequest(token, reqAPI)
+
+	stats1 := limiter.GetStats(token)
+	if stats1.APIRemaining != 999 {
+		t.Errorf("expected 999 remaining, got %d", stats1.APIRemaining)
+	}
+	if stats1.RequestsInWindow != 1 {
+		t.Errorf("expected 1 request in window, got %d", stats1.RequestsInWindow)
+	}
+
+	// Dispatch a Resolvers request
+	reqResolver, _ := http.NewRequest("GET", "https://huggingface.co/datasets/foo/resolve/main/chunk-0", nil)
+	limiter.RecordRequest(token, reqResolver)
+
+	stats2 := limiter.GetStats(token)
+	if stats2.ResolversRemaining != 4999 {
+		t.Errorf("expected 4999 resolvers remaining, got %d", stats2.ResolversRemaining)
+	}
+	if stats2.RequestsInWindow != 2 {
+		t.Errorf("expected 2 requests in window, got %d", stats2.RequestsInWindow)
+	}
+}

@@ -307,3 +307,77 @@ func TestStaticAssetsServing(t *testing.T) {
 		t.Fatalf("Expected 200 OK from /style.css, got %d", rec.Code)
 	}
 }
+
+func TestUpdateAccountDetails(t *testing.T) {
+	handler, mux, validToken, cleanup := setupTestDashboard(t)
+	defer cleanup()
+
+	ctx := t.Context()
+	acc := &models.Account{
+		Name:       "Original Name",
+		Username:   "testuser",
+		Token:      "hf_sampletoken_12345678",
+		RepoName:   "testuser/original-repo",
+		QuotaBytes: 50 * 1024 * 1024 * 1024,
+		IsActive:   true,
+	}
+	if err := handler.pool.DB().CreateAccount(ctx, acc); err != nil {
+		t.Fatalf("Failed to create test account: %v", err)
+	}
+
+	// Update account details via PUT /api/accounts/{id}
+	newQuota := int64(0) // Dynamic quota
+	newActive := false
+	updatePayload, _ := json.Marshal(map[string]interface{}{
+		"name":      "Renamed Account",
+		"repo_name": "testuser/original-repo",
+		"quota_gb":  newQuota,
+		"is_active": newActive,
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/accounts/1", bytes.NewReader(updatePayload))
+	req.Header.Set("X-Admin-Token", validToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK updating account, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify in DB
+	updated, err := handler.pool.DB().GetAccountByID(ctx, 1)
+	if err != nil {
+		t.Fatalf("Failed to fetch updated account: %v", err)
+	}
+	if updated.Name != "Renamed Account" {
+		t.Errorf("Expected Name Renamed Account, got %s", updated.Name)
+	}
+	if updated.QuotaBytes != 0 {
+		t.Errorf("Expected QuotaBytes 0 (dynamic), got %d", updated.QuotaBytes)
+	}
+	if updated.IsActive != false {
+		t.Errorf("Expected IsActive false, got %v", updated.IsActive)
+	}
+
+	// Verify via GET /api/accounts that rate_limit is included
+	reqList := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	reqList.Header.Set("X-Admin-Token", validToken)
+	recList := httptest.NewRecorder()
+	mux.ServeHTTP(recList, reqList)
+
+	if recList.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK listing accounts, got %d", recList.Code)
+	}
+
+	var listResp []AccountResponse
+	if err := json.NewDecoder(recList.Body).Decode(&listResp); err != nil {
+		t.Fatalf("Failed to decode accounts list: %v", err)
+	}
+	if len(listResp) != 1 {
+		t.Fatalf("Expected 1 account, got %d", len(listResp))
+	}
+	if listResp[0].RateLimit.APILimit != 1000 || listResp[0].RateLimit.APIRemaining != 1000 {
+		t.Errorf("Expected 1000/1000 API in rate_limit, got %d/%d",
+			listResp[0].RateLimit.APIRemaining, listResp[0].RateLimit.APILimit)
+	}
+}

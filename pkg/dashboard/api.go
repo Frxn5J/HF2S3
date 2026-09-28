@@ -70,6 +70,8 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts/{id}/toggle", h.adminAuth.RequireAuth(h.handleToggleAccount))
 	mux.HandleFunc("POST /api/accounts/{id}/sync", h.adminAuth.RequireAuth(h.handleSyncAccount))
 	mux.HandleFunc("POST /api/accounts/{id}/quota", h.adminAuth.RequireAuth(h.handleUpdateAccountQuota))
+	mux.HandleFunc("PUT /api/accounts/{id}", h.adminAuth.RequireAuth(h.handleUpdateAccount))
+	mux.HandleFunc("POST /api/accounts/{id}/update", h.adminAuth.RequireAuth(h.handleUpdateAccount))
 	mux.HandleFunc("DELETE /api/accounts/{id}", h.adminAuth.RequireAuth(h.handleDeleteAccount))
 
 	// Multi-Bucket S3 Cache endpoints
@@ -437,6 +439,89 @@ func (h *DashboardHandler) handleUpdateAccountQuota(w http.ResponseWriter, r *ht
 	}
 
 	h.writeJSON(w, http.StatusOK, acc)
+}
+
+type UpdateAccountRequest struct {
+	Name     string `json:"name"`
+	Token    string `json:"token"`
+	RepoName string `json:"repo_name"`
+	QuotaGB  *int64 `json:"quota_gb"`
+	IsActive *bool  `json:"is_active"`
+}
+
+func (h *DashboardHandler) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid account id")
+		return
+	}
+
+	acc, err := h.pool.DB().GetAccountByID(r.Context(), id)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "Account not found")
+		return
+	}
+
+	var req UpdateAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	token := strings.TrimSpace(req.Token)
+	if token != "" && token != acc.Token {
+		whoami, err := h.pool.HFClient().VerifyToken(r.Context(), token)
+		if err != nil {
+			h.writeError(w, http.StatusUnauthorized, fmt.Sprintf("Invalid Hugging Face token: %v", err))
+			return
+		}
+		acc.Token = token
+		acc.Username = whoami.Name
+	}
+
+	if name := strings.TrimSpace(req.Name); name != "" {
+		acc.Name = name
+	}
+
+	repoName := strings.TrimSpace(req.RepoName)
+	if repoName != "" && repoName != acc.RepoName {
+		cleanRepo := repoName
+		if strings.Contains(cleanRepo, "/") {
+			parts := strings.Split(cleanRepo, "/")
+			cleanRepo = parts[len(parts)-1]
+		}
+		fullRepoID := fmt.Sprintf("%s/%s", acc.Username, cleanRepo)
+		if err := h.pool.HFClient().EnsureDatasetRepoWithVisibility(r.Context(), acc.Token, cleanRepo, false); err != nil {
+			h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to prepare dataset repository: %v", err))
+			return
+		}
+		acc.RepoName = fullRepoID
+	}
+
+	if req.QuotaGB != nil {
+		if *req.QuotaGB <= 0 {
+			acc.QuotaBytes = 0
+		} else {
+			acc.QuotaBytes = *req.QuotaGB * 1024 * 1024 * 1024
+		}
+	}
+
+	if req.IsActive != nil {
+		acc.IsActive = *req.IsActive
+	}
+
+	if err := h.pool.DB().UpdateAccount(r.Context(), acc); err != nil {
+		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update account: %v", err))
+		return
+	}
+
+	respAcc := *acc
+	if len(respAcc.Token) > 8 {
+		respAcc.Token = respAcc.Token[:4] + "..." + respAcc.Token[len(respAcc.Token)-4:]
+	}
+
+	h.writeJSON(w, http.StatusOK, respAcc)
 }
 
 // --- Cache Buckets (Tier 1 S3 Cache) Handlers ---

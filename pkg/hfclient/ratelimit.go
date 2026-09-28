@@ -25,6 +25,13 @@ const (
 	// Default commit pacing per account: 5 commits/sec with burst of 10
 	DefaultCommitPacingRate  = 5.0
 	DefaultCommitPacingBurst = 10.0
+
+	// Official Hugging Face rate limits per 5-minute interval (Free user):
+	// API: 1,000 req / 5 min | Resolvers: 5,000 req / 5 min | Pages: 200 req / 5 min
+	DefaultAPILimit        = 1000
+	DefaultResolversLimit  = 5000
+	DefaultPagesLimit      = 200
+	DefaultRateLimitWindow = 5 * time.Minute
 )
 
 var ErrRateLimited = errors.New("hugging face rate limit exceeded")
@@ -233,13 +240,17 @@ func (p *RatePacer) Wait(ctx context.Context) error {
 }
 
 type AccountRateLimitState struct {
+	APILimit           int
 	APIRemaining       int
 	APIResetAt         time.Time
+	ResolversLimit     int
 	ResolversRemaining int
 	ResolversResetAt   time.Time
+	PagesLimit         int
+	PagesRemaining     int
 	CooldownUntil      time.Time
 	Last429            time.Time
-	TotalLimit         int
+	RequestsInWindow   int
 	Pacer              *RatePacer
 }
 
@@ -258,9 +269,16 @@ func NewTokenRateLimiter() *TokenRateLimiter {
 func (t *TokenRateLimiter) getStateLocked(token string) *AccountRateLimitState {
 	s, ok := t.states[token]
 	if !ok {
+		now := time.Now()
 		s = &AccountRateLimitState{
-			APIRemaining:       1000, // Default Free tier assumption
-			ResolversRemaining: 5000,
+			APILimit:           DefaultAPILimit,
+			APIRemaining:       DefaultAPILimit,
+			APIResetAt:         now.Add(DefaultRateLimitWindow),
+			ResolversLimit:     DefaultResolversLimit,
+			ResolversRemaining: DefaultResolversLimit,
+			ResolversResetAt:   now.Add(DefaultRateLimitWindow),
+			PagesLimit:         DefaultPagesLimit,
+			PagesRemaining:     DefaultPagesLimit,
 			Pacer:              NewRatePacer(DefaultCommitPacingRate, DefaultCommitPacingBurst),
 		}
 		t.states[token] = s
@@ -268,7 +286,51 @@ func (t *TokenRateLimiter) getStateLocked(token string) *AccountRateLimitState {
 	return s
 }
 
-// RecordResponse updates state based on HTTP headers.
+// RecordRequest registers an outgoing HTTP call in the current 5-minute window.
+func (t *TokenRateLimiter) RecordRequest(token string, req *http.Request) {
+	if token == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	s := t.getStateLocked(token)
+	now := time.Now()
+
+	// Window rotation check
+	if !s.APIResetAt.IsZero() && now.After(s.APIResetAt) {
+		limit := s.APILimit
+		if limit <= 0 {
+			limit = DefaultAPILimit
+		}
+		s.APIRemaining = limit
+		s.APIResetAt = now.Add(DefaultRateLimitWindow)
+		s.ResolversRemaining = s.ResolversLimit
+		s.ResolversResetAt = now.Add(DefaultRateLimitWindow)
+		s.PagesRemaining = s.PagesLimit
+		s.RequestsInWindow = 0
+	} else if s.APIResetAt.IsZero() {
+		s.APIResetAt = now.Add(DefaultRateLimitWindow)
+	}
+
+	bucket := BucketAPI
+	if req != nil && strings.Contains(req.URL.Path, "/resolve/") {
+		bucket = BucketResolvers
+	}
+
+	if bucket == BucketResolvers {
+		if s.ResolversRemaining > 0 {
+			s.ResolversRemaining--
+		}
+	} else {
+		if s.APIRemaining > 0 {
+			s.APIRemaining--
+		}
+	}
+	s.RequestsInWindow++
+}
+
+// RecordResponse updates state based on HTTP response headers.
 func (t *TokenRateLimiter) RecordResponse(token string, resp *http.Response) *RateLimitInfo {
 	if token == "" || resp == nil {
 		return nil
@@ -303,7 +365,7 @@ func (t *TokenRateLimiter) RecordResponse(token string, resp *http.Response) *Ra
 		}
 
 		if info.Limit > 0 {
-			s.TotalLimit = info.Limit
+			s.APILimit = info.Limit
 		}
 	}
 
@@ -314,6 +376,7 @@ func (t *TokenRateLimiter) RecordResponse(token string, resp *http.Response) *Ra
 			cooldown = info.ResetIn
 		}
 		s.CooldownUntil = time.Now().Add(cooldown)
+		s.APIRemaining = 0
 	}
 
 	return info
@@ -373,26 +436,58 @@ func (t *TokenRateLimiter) WaitCommit(ctx context.Context, token string) error {
 
 type RateLimitStats struct {
 	APIRemaining       int       `json:"api_remaining"`
+	APILimit           int       `json:"api_limit"`
 	APIResetAt         time.Time `json:"api_reset_at"`
+	APIResetInS        int       `json:"api_reset_in_s"`
 	ResolversRemaining int       `json:"resolvers_remaining"`
+	ResolversLimit     int       `json:"resolvers_limit"`
 	ResolversResetAt   time.Time `json:"resolvers_reset_at"`
+	PagesRemaining     int       `json:"pages_remaining"`
+	PagesLimit         int       `json:"pages_limit"`
+	WindowSeconds      int       `json:"window_seconds"`
+	RequestsInWindow   int       `json:"requests_in_window"`
 	IsThrottled        bool      `json:"is_throttled"`
 	CooldownRemainingS int       `json:"cooldown_remaining_s"`
 }
 
 func (t *TokenRateLimiter) GetStats(token string) RateLimitStats {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
+	now := time.Now()
 	s, ok := t.states[token]
 	if !ok {
 		return RateLimitStats{
-			APIRemaining:       1000,
-			ResolversRemaining: 5000,
+			APIRemaining:       DefaultAPILimit,
+			APILimit:           DefaultAPILimit,
+			APIResetAt:         now.Add(DefaultRateLimitWindow),
+			APIResetInS:        300,
+			ResolversRemaining: DefaultResolversLimit,
+			ResolversLimit:     DefaultResolversLimit,
+			PagesRemaining:     DefaultPagesLimit,
+			PagesLimit:         DefaultPagesLimit,
+			WindowSeconds:      300,
+			RequestsInWindow:   0,
+			IsThrottled:        false,
 		}
 	}
 
-	now := time.Now()
+	// Window expiration check
+	if !s.APIResetAt.IsZero() && now.After(s.APIResetAt) {
+		limit := s.APILimit
+		if limit <= 0 {
+			limit = DefaultAPILimit
+		}
+		s.APIRemaining = limit
+		s.APIResetAt = now.Add(DefaultRateLimitWindow)
+		s.ResolversRemaining = s.ResolversLimit
+		s.ResolversResetAt = now.Add(DefaultRateLimitWindow)
+		s.PagesRemaining = s.PagesLimit
+		s.RequestsInWindow = 0
+	} else if s.APIResetAt.IsZero() {
+		s.APIResetAt = now.Add(DefaultRateLimitWindow)
+	}
+
 	throttled, dur := false, time.Duration(0)
 	if now.Before(s.CooldownUntil) {
 		throttled = true
@@ -402,11 +497,36 @@ func (t *TokenRateLimiter) GetStats(token string) RateLimitStats {
 		dur = s.APIResetAt.Sub(now)
 	}
 
+	resetInS := 0
+	if !s.APIResetAt.IsZero() && s.APIResetAt.After(now) {
+		resetInS = int(s.APIResetAt.Sub(now).Seconds())
+	}
+
+	apiLimit := s.APILimit
+	if apiLimit <= 0 {
+		apiLimit = DefaultAPILimit
+	}
+	resLimit := s.ResolversLimit
+	if resLimit <= 0 {
+		resLimit = DefaultResolversLimit
+	}
+	pagesLimit := s.PagesLimit
+	if pagesLimit <= 0 {
+		pagesLimit = DefaultPagesLimit
+	}
+
 	return RateLimitStats{
 		APIRemaining:       s.APIRemaining,
+		APILimit:           apiLimit,
 		APIResetAt:         s.APIResetAt,
+		APIResetInS:        resetInS,
 		ResolversRemaining: s.ResolversRemaining,
+		ResolversLimit:     resLimit,
 		ResolversResetAt:   s.ResolversResetAt,
+		PagesRemaining:     s.PagesRemaining,
+		PagesLimit:         pagesLimit,
+		WindowSeconds:      300,
+		RequestsInWindow:   s.RequestsInWindow,
 		IsThrottled:        throttled,
 		CooldownRemainingS: int(dur.Seconds()),
 	}

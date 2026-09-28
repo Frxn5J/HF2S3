@@ -69,6 +69,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalAddAccount = document.getElementById('modalAddAccount');
   const formAddAccount = document.getElementById('formAddAccount');
   const btnSubmitAccount = document.getElementById('btnSubmitAccount');
+  const modalEditAccount = document.getElementById('modalEditAccount');
+  const formEditAccount = document.getElementById('formEditAccount');
+  const btnSubmitEditAccount = document.getElementById('btnSubmitEditAccount');
 
   // Cache Buckets Elements (Tier 1 S3 Cache)
   const cacheBucketsTableBody = document.getElementById('cacheBucketsTableBody');
@@ -217,7 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Keyboard accessibility: Close modals with Escape (R-32)
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      [modalAddAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(m => {
+      [modalAddAccount, modalEditAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(m => {
         if (m && !m.classList.contains('hidden')) {
           m.classList.add('hidden');
         }
@@ -226,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Close modals on backdrop click
-  [modalAddAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(modal => {
+  [modalAddAccount, modalEditAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(modal => {
     if (modal) {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -342,6 +345,23 @@ document.addEventListener('DOMContentLoaded', () => {
         accountsCache.forEach(acc => {
           const hasQuota = acc.quota_bytes > 0;
           const usedPct = hasQuota ? ((acc.used_bytes / acc.quota_bytes) * 100).toFixed(1) : 0;
+          const rl = acc.rate_limit || {};
+          const apiRem = rl.api_remaining !== undefined ? rl.api_remaining : 1000;
+          const apiLim = rl.api_limit || 1000;
+          const resetInS = rl.api_reset_in_s || 300;
+          const mins = Math.floor(resetInS / 60);
+          const secs = resetInS % 60;
+          const resetStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+          const resRem = rl.resolvers_remaining !== undefined ? rl.resolvers_remaining : 5000;
+          const resLim = rl.resolvers_limit || 5000;
+
+          let cardStatusColor = 'var(--accent-emerald)';
+          if (rl.is_throttled) {
+            cardStatusColor = 'var(--accent-rose)';
+          } else if (apiRem <= 50) {
+            cardStatusColor = 'var(--accent-amber)';
+          }
+
           const card = document.createElement('div');
           card.className = 'account-card';
           card.innerHTML = `
@@ -369,6 +389,16 @@ document.addEventListener('DOMContentLoaded', () => {
               <span>Almacenado: <strong>${formatBytes(acc.used_bytes)}</strong></span>
               <span style="color: var(--accent-cyan); font-weight: 600;">Cuota Dinámica</span>
             </div>`}
+            <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle); font-size: 0.75rem;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                <span style="color: var(--text-muted);">Límite API (5 min):</span>
+                <strong style="color: ${cardStatusColor};">${apiRem} / ${apiLim} reqs</strong>
+              </div>
+              <div style="font-size: 0.68rem; color: var(--text-dim); display: flex; justify-content: space-between;">
+                <span>Resolvers: ${resRem}/${resLim}</span>
+                <span>Reinicio: ${resetStr}</span>
+              </div>
+            </div>
           `;
           overviewAccountsGrid.appendChild(card);
         });
@@ -377,7 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Render Accounts Table
       accountsTableBody.innerHTML = '';
       if (accountsCache.length === 0) {
-        accountsTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">No hay cuentas conectadas</td></tr>';
+        accountsTableBody.innerHTML = '<tr><td colspan="7" class="empty-state">No hay cuentas conectadas</td></tr>';
       } else {
         accountsCache.forEach(acc => {
           const tr = document.createElement('tr');
@@ -385,6 +415,31 @@ document.addEventListener('DOMContentLoaded', () => {
             ? formatBytes(acc.quota_bytes)
             : `<span class="pill-badge" style="color:var(--accent-cyan);background:rgba(6,182,212,0.12);border:1px solid rgba(6,182,212,0.3);padding:2px 8px;border-radius:12px;font-size:0.75rem;font-weight:600;">Dinámica</span>`;
           const quotaGBVal = acc.quota_bytes > 0 ? (acc.quota_bytes / (1024 * 1024 * 1024)).toFixed(0) : 0;
+
+          const rl = acc.rate_limit || {};
+          const apiRem = rl.api_remaining !== undefined ? rl.api_remaining : 1000;
+          const apiLim = rl.api_limit || 1000;
+          const apiPct = Math.max(0, Math.min(100, Math.round((apiRem / apiLim) * 100)));
+          const resetInS = rl.api_reset_in_s || 300;
+          const mins = Math.floor(resetInS / 60);
+          const secs = resetInS % 60;
+          const resetStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+          const resRem = rl.resolvers_remaining !== undefined ? rl.resolvers_remaining : 5000;
+          const resLim = rl.resolvers_limit || 5000;
+          const pagesRem = rl.pages_remaining !== undefined ? rl.pages_remaining : 200;
+          const pagesLim = rl.pages_limit || 200;
+
+          let barColor = 'var(--accent-emerald)';
+          let statusColor = 'var(--accent-emerald)';
+          let statusText = `${apiRem} / ${apiLim} disp.`;
+          if (rl.is_throttled) {
+            barColor = 'var(--accent-rose)';
+            statusColor = 'var(--accent-rose)';
+            statusText = `Throttled (${rl.cooldown_remaining_s || 15}s)`;
+          } else if (apiRem <= 50) {
+            barColor = 'var(--accent-amber)';
+            statusColor = 'var(--accent-amber)';
+          }
 
           tr.innerHTML = `
             <td>
@@ -395,6 +450,21 @@ document.addEventListener('DOMContentLoaded', () => {
               <code>${acc.repo_name}</code>
               <span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(6,182,212,0.12);color:var(--accent-cyan);border:1px solid rgba(6,182,212,0.25);font-weight:600;margin-left:4px;">PÚBLICO</span>
             </td>
+            <td title="Límites Hugging Face (5 min): API: ${apiRem}/${apiLim} | Resolvers: ${resRem}/${resLim} | Pages: ${pagesRem}/${pagesLim}">
+              <div style="min-width: 140px;">
+                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 3px;">
+                  <span style="font-weight: 600; color: ${statusColor};">${statusText}</span>
+                  <span style="color: var(--text-dim); font-size: 0.7rem;">${apiPct}%</span>
+                </div>
+                <div class="progress-bar-wrap" style="height: 5px; margin-bottom: 4px;">
+                  <div class="progress-bar" style="width: ${apiPct}%; background: ${barColor};"></div>
+                </div>
+                <div style="font-size: 0.68rem; color: var(--text-dim); display: flex; justify-content: space-between;">
+                  <span>Ventana 5m</span>
+                  <span>Reinicio: ${resetStr}</span>
+                </div>
+              </div>
+            </td>
             <td>${formatBytes(acc.used_bytes)}</td>
             <td>${quotaDisplay}</td>
             <td>
@@ -404,6 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td>
               <button class="btn btn-xs btn-secondary btn-sync-acc" data-id="${acc.id}" title="Sincronizar uso">Sync</button>
+              <button class="btn btn-xs btn-outline btn-edit-acc" data-id="${acc.id}" title="Editar detalles de la cuenta">Editar</button>
               <button class="btn btn-xs btn-outline btn-quota-acc" data-id="${acc.id}" data-quota="${quotaGBVal}" title="Ajustar cuota en GB (0 para Dinámica)">Cuota</button>
               <button class="btn btn-xs btn-outline btn-toggle-acc" data-id="${acc.id}">
                 ${acc.is_active ? 'Desactivar' : 'Activar'}
@@ -415,6 +486,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Attach action handlers
+        document.querySelectorAll('.btn-edit-acc').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const id = parseInt(btn.dataset.id, 10);
+            const acc = accountsCache.find(a => a.id === id);
+            if (!acc) return;
+            document.getElementById('editAccountIdInput').value = acc.id;
+            document.getElementById('editAccountNameInput').value = acc.name || '';
+            document.getElementById('editAccountUsernameInput').value = `@${acc.username || ''}`;
+            document.getElementById('editAccountTokenInput').value = '';
+            document.getElementById('editAccountRepoInput').value = acc.repo_name || '';
+            const quotaGB = acc.quota_bytes > 0 ? (acc.quota_bytes / (1024 * 1024 * 1024)).toFixed(0) : 0;
+            document.getElementById('editAccountQuotaInput').value = quotaGB;
+            document.getElementById('editAccountStatusInput').value = acc.is_active ? 'true' : 'false';
+            modalEditAccount.classList.remove('hidden');
+          });
+        });
+
         document.querySelectorAll('.btn-quota-acc').forEach(btn => {
           btn.addEventListener('click', async () => {
             const id = btn.dataset.id;
@@ -513,6 +601,55 @@ document.addEventListener('DOMContentLoaded', () => {
       btnSubmitAccount.innerHTML = '<span class="btn-text">Verificar y Conectar</span>';
     }
   });
+
+  // Edit Account form submission
+  if (formEditAccount) {
+    formEditAccount.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = document.getElementById('editAccountIdInput').value;
+      const name = document.getElementById('editAccountNameInput').value.trim();
+      const token = document.getElementById('editAccountTokenInput').value.trim();
+      const repo = document.getElementById('editAccountRepoInput').value.trim();
+      const quota = parseInt(document.getElementById('editAccountQuotaInput').value, 10) || 0;
+      const isActive = document.getElementById('editAccountStatusInput').value === 'true';
+
+      btnSubmitEditAccount.disabled = true;
+      btnSubmitEditAccount.innerHTML = '<span class="btn-text">Guardando...</span>';
+
+      try {
+        const payload = {
+          name: name,
+          repo_name: repo,
+          quota_gb: quota,
+          is_active: isActive
+        };
+        if (token) {
+          payload.token = token;
+        }
+
+        const res = await fetch(`/api/accounts/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showToast(data.error || 'Error al actualizar cuenta', 'error');
+        } else {
+          showToast('Detalles de cuenta actualizados exitosamente');
+          modalEditAccount.classList.add('hidden');
+          loadAccounts();
+          loadStats();
+        }
+      } catch (err) {
+        showToast('Error de conexión al actualizar la cuenta', 'error');
+      } finally {
+        btnSubmitEditAccount.disabled = false;
+        btnSubmitEditAccount.innerHTML = '<span class="btn-text">Guardar Cambios</span>';
+      }
+    });
+  }
 
   // --- CACHE BUCKETS (TIER 1 S3 CACHE) ---
 
