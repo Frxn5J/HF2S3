@@ -1125,40 +1125,55 @@ document.addEventListener('DOMContentLoaded', () => {
     uploadFile(file, activeBucket);
   }
 
-  async function uploadFile(file, bucket) {
+  // XMLHttpRequest (not fetch) because it is the only browser API that reports upload progress.
+  function uploadFile(file, bucket) {
+    const label = `"${file.name}" (${formatBytes(file.size)})`;
     uploadProgressCard.classList.remove('hidden');
-    uploadingFileName.textContent = `Cifrando y distribuyendo "${file.name}" (${formatBytes(file.size)})...`;
-    uploadProgressBar.style.width = '30%';
+    uploadingFileName.textContent = `Subiendo ${label}: 0%`;
+    uploadProgressBar.style.width = '0%';
 
     const formData = new FormData();
     formData.append('bucket', bucket);
     formData.append('key', file.name);
     formData.append('file', file);
 
-    try {
-      uploadProgressBar.style.width = '70%';
-      const res = await fetch('/api/objects/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        showToast(data.error || 'Fallo en la subida', 'error');
-      } else {
-        uploadProgressBar.style.width = '100%';
+    const xhr = new XMLHttpRequest();
+    const startedAt = Date.now();
+    xhr.open('POST', '/api/objects/upload');
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable) return;
+      const pct = Math.round((ev.loaded / ev.total) * 100);
+      const secs = Math.max((Date.now() - startedAt) / 1000, 1);
+      uploadProgressBar.style.width = pct + '%';
+      uploadingFileName.textContent =
+        `Subiendo ${label}: ${pct}% (${formatBytes(ev.loaded)} a ${formatBytes(ev.loaded / secs)}/s)`;
+    };
+    xhr.upload.onload = () => {
+      // The whole body reached the gateway; it now encrypts and distributes it.
+      uploadProgressBar.style.width = '100%';
+      uploadingFileName.textContent = `Cifrando y distribuyendo ${label}...`;
+    };
+    xhr.onloadend = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+      if (xhr.status === 401) {
+        showLoginOverlay();
+      } else if (xhr.status >= 200 && xhr.status < 300) {
         showToast(`"${file.name}" subido y cifrado con éxito`);
         loadObjectsForBucket(bucket);
         loadStats();
         loadAccounts();
+      } else if (xhr.status === 0) {
+        showToast('Error de subida: se perdió la conexión con el servidor', 'error');
+      } else {
+        showToast(data.error || 'Fallo en la subida', 'error');
       }
-    } catch (e) {
-      showToast('Error de subida', 'error');
-    } finally {
       setTimeout(() => {
         uploadProgressCard.classList.add('hidden');
         uploadProgressBar.style.width = '0%';
       }, 1000);
-    }
+    };
+    xhr.send(formData);
   }
 
   // Drag & drop
