@@ -85,8 +85,7 @@ func setupTestStoragePool(t *testing.T, chunkSizeBytes int64) (*PoolManager, *db
 				// sub is user1/repo1/resolve/main/data/...
 				parts := bytes.Split([]byte(sub), []byte("/resolve/main/"))
 				if len(parts) == 2 {
-					remotePath := string(parts[1])
-					if data, ok := fakeHFStore[remotePath]; ok {
+					if data, ok := fakeHFStore[string(parts[1])]; ok {
 						w.WriteHeader(http.StatusOK)
 						_, _ = w.Write(data)
 						return

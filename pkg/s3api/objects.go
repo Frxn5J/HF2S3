@@ -346,7 +346,7 @@ func (s *Server) handleDeleteObjects(w http.ResponseWriter, r *http.Request, buc
 				Message: "We encountered an internal error. Please try again.",
 			})
 		} else if !req.Quiet {
-			deleted = append(deleted, DeletedObject{Key: o.Key})
+			deleted = append(deleted, DeletedObject(o))
 		}
 	}
 

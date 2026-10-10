@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-const s3NS = "http://s3.amazonaws.com/doc/2006-03-01/"
-
 type ListAllMyBucketsResult struct {
 	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListAllMyBucketsResult"`
 	Owner   Owner    `xml:"Owner"`

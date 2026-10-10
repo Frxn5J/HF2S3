@@ -279,9 +279,11 @@ func (s *Server) routeObject(w http.ResponseWriter, r *http.Request, bucket, key
 
 func validateKey(key string) error {
 	if len(key) > maxKeyBytes {
+		//lint:ignore ST1005 the text is returned to S3 clients and mirrors the AWS message
 		return errors.New("Your key is too long")
 	}
 	if !utf8.ValidString(key) || strings.ContainsRune(key, 0) {
+		//lint:ignore ST1005 the text is returned to S3 clients and mirrors the AWS message
 		return errors.New("Your key contains invalid characters")
 	}
 	return nil

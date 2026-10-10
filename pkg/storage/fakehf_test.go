@@ -139,12 +139,6 @@ func (f *fakeHF) totalCommits() int {
 	return n
 }
 
-func (f *fakeHF) commitsFor(token string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.commits[token]
-}
-
 // fileKeys lists committed "repo/path" keys.
 func (f *fakeHF) fileKeys() []string {
 	f.mu.Lock()

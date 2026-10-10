@@ -376,10 +376,11 @@ func main() {
 	var peakMbps float64
 	var saturationUsers int
 
+steps:
 	for u := cfg.StartUsers; u <= cfg.MaxUsers; u += cfg.StepUsers {
 		select {
 		case <-ctx.Done():
-			break
+			break steps
 		default:
 		}
 
