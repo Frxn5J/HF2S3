@@ -262,6 +262,10 @@
               </div>
               <div class="files-actions">
                 <input type="text" class="input-search" id="fileSearchInput" placeholder="Filtrar archivos..." />
+                <button class="btn btn-secondary btn-sm" id="btnNewFolder">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+                  <span>Nueva carpeta</span>
+                </button>
                 <button class="btn btn-primary btn-sm" id="btnUploadToFileBrowser">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                   <span>Subir a este Bucket</span>
@@ -286,7 +290,7 @@
 
             <!-- Upload drag dropzone -->
             <div class="upload-dropzone" id="uploadDropzone">
-              <input type="file" id="fileUploadInput" hidden />
+              <input type="file" id="fileUploadInput" multiple hidden />
               <div class="dropzone-inner">
                 <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                 <p>Arrastra archivos aquí o <span class="highlight-link">explora en tu equipo</span></p>
@@ -833,6 +837,28 @@
         <div class="modal-actions">
           <button type="button" class="btn btn-secondary" data-close="modalCreateBucket">Cancelar</button>
           <button type="submit" class="btn btn-primary">Crear Bucket</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: NEW FOLDER -->
+  <div class="modal-overlay hidden" id="modalCreateFolder" role="dialog" aria-modal="true" aria-labelledby="createFolderTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="createFolderTitle">Nueva carpeta</h3>
+        <button class="modal-close" data-close="modalCreateFolder" aria-label="Cerrar">&times;</button>
+      </div>
+      <form id="formCreateFolder">
+        <div class="form-group">
+          <label for="folderNameInput">Nombre de la carpeta</label>
+          <input type="text" class="input-text" id="folderNameInput" placeholder="ej. fotos/2026" maxlength="200" autocomplete="off" required />
+          <span class="field-hint" id="folderPathHint"></span>
+          <span class="field-hint">Usa <code>/</code> para crear subcarpetas de una vez. La carpeta queda guardada cuando subes su primer archivo.</span>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="modalCreateFolder">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Crear y abrir</button>
         </div>
       </form>
     </div>

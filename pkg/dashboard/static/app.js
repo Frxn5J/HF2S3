@@ -28,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeBucket = null;
   let allFiles = [];
   let allFolders = [];
+  let uploading = false;           // an upload queue is running
   let currentPrefix = '';          // folder being browsed ('' = bucket root, otherwise ends in '/')
   let folderNext = '';             // cursor for the next page of the folder listing
   const selection = new Map();     // ticked rows: 'f:<key>' or 'd:<prefix>' -> {key, is_prefix}
@@ -96,6 +97,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const bucketsListContainer = document.getElementById('bucketsListContainer');
   const btnCreateBucketModal = document.getElementById('btnCreateBucketModal');
   const modalCreateBucket = document.getElementById('modalCreateBucket');
+  const modalCreateFolder = document.getElementById('modalCreateFolder');
   const formCreateBucket = document.getElementById('formCreateBucket');
   const activeBucketName = document.getElementById('activeBucketName');
   const activeBucketStats = document.getElementById('activeBucketStats');
@@ -219,7 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Keyboard accessibility: Close modals with Escape (R-32)
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      [modalAddAccount, modalEditAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(m => {
+      [modalAddAccount, modalEditAccount, modalAddCacheBucket, modalCreateBucket, modalCreateFolder, modalInspectChunks].forEach(m => {
         if (m && !m.classList.contains('hidden')) {
           m.classList.add('hidden');
         }
@@ -228,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Close modals on backdrop click
-  [modalAddAccount, modalEditAccount, modalAddCacheBucket, modalCreateBucket, modalInspectChunks].forEach(modal => {
+  [modalAddAccount, modalEditAccount, modalAddCacheBucket, modalCreateBucket, modalCreateFolder, modalInspectChunks].forEach(modal => {
     if (modal) {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -1446,64 +1448,148 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- UPLOAD HANDLER ---
 
-  function triggerUploadFile(file) {
+  // Uploads run one after another so the progress card always describes a single file.
+  async function triggerUploadFiles(fileList) {
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
     if (!activeBucket) {
       showToast('Por favor selecciona o crea un bucket primero', 'error');
       return;
     }
-    uploadFile(file, activeBucket);
+    if (uploading) {
+      showToast('Espera a que terminen las subidas en curso', 'error');
+      return;
+    }
+    uploading = true;
+    // Fixed now so a folder change during the queue cannot redirect later files.
+    const bucket = activeBucket;
+    const prefix = currentPrefix;
+    let failed = 0;
+    for (let i = 0; i < files.length; i++) {
+      const tag = files.length > 1 ? `[${i + 1}/${files.length}] ` : '';
+      if (!(await uploadFile(files[i], bucket, prefix, tag))) failed++;
+    }
+    uploading = false;
+    if (files.length > 1) {
+      showToast(
+        failed ? `${files.length - failed} de ${files.length} archivos subidos` : `${files.length} archivos subidos y cifrados`,
+        failed ? 'error' : undefined
+      );
+    }
+    setTimeout(() => {
+      if (uploading) return;
+      uploadProgressCard.classList.add('hidden');
+      uploadProgressBar.style.width = '0%';
+    }, 1000);
   }
 
   // XMLHttpRequest (not fetch) because it is the only browser API that reports upload progress.
-  function uploadFile(file, bucket) {
-    const label = `"${file.name}" (${formatBytes(file.size)})`;
-    uploadProgressCard.classList.remove('hidden');
-    uploadingFileName.textContent = `Subiendo ${label}: 0%`;
-    uploadProgressBar.style.width = '0%';
+  // Resolves true when the file was stored.
+  function uploadFile(file, bucket, prefix, tag) {
+    return new Promise((resolve) => {
+      const label = `${tag}"${file.name}" (${formatBytes(file.size)})`;
+      uploadProgressCard.classList.remove('hidden');
+      uploadingFileName.textContent = `Subiendo ${label}: 0%`;
+      uploadProgressBar.style.width = '0%';
 
-    const formData = new FormData();
-    formData.append('bucket', bucket);
-    formData.append('key', currentPrefix + file.name);
-    formData.append('file', file);
+      const formData = new FormData();
+      formData.append('bucket', bucket);
+      formData.append('key', prefix + file.name);
+      formData.append('file', file);
 
-    const xhr = new XMLHttpRequest();
-    const startedAt = Date.now();
-    xhr.open('POST', '/api/objects/upload');
-    xhr.upload.onprogress = (ev) => {
-      if (!ev.lengthComputable) return;
-      const pct = Math.round((ev.loaded / ev.total) * 100);
-      const secs = Math.max((Date.now() - startedAt) / 1000, 1);
-      uploadProgressBar.style.width = pct + '%';
-      uploadingFileName.textContent =
-        `Subiendo ${label}: ${pct}% (${formatBytes(ev.loaded)} a ${formatBytes(ev.loaded / secs)}/s)`;
-    };
-    xhr.upload.onload = () => {
-      // The whole body reached the gateway; it now encrypts and distributes it.
-      uploadProgressBar.style.width = '100%';
-      uploadingFileName.textContent = `Cifrando y distribuyendo ${label}...`;
-    };
-    xhr.onloadend = () => {
-      let data = {};
-      try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
-      if (xhr.status === 401) {
-        showLoginOverlay();
-      } else if (xhr.status >= 200 && xhr.status < 300) {
-        showToast(`"${file.name}" subido y cifrado con éxito`);
-        loadObjectsForBucket(bucket);
-        loadStats();
-        loadAccounts();
-      } else if (xhr.status === 0) {
-        showToast('Error de subida: se perdió la conexión con el servidor', 'error');
-      } else {
-        showToast(data.error || 'Fallo en la subida', 'error');
-      }
-      setTimeout(() => {
-        uploadProgressCard.classList.add('hidden');
-        uploadProgressBar.style.width = '0%';
-      }, 1000);
-    };
-    xhr.send(formData);
+      const xhr = new XMLHttpRequest();
+      const startedAt = Date.now();
+      xhr.open('POST', '/api/objects/upload');
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable) return;
+        const pct = Math.round((ev.loaded / ev.total) * 100);
+        const secs = Math.max((Date.now() - startedAt) / 1000, 1);
+        uploadProgressBar.style.width = pct + '%';
+        uploadingFileName.textContent =
+          `Subiendo ${label}: ${pct}% (${formatBytes(ev.loaded)} a ${formatBytes(ev.loaded / secs)}/s)`;
+      };
+      xhr.upload.onload = () => {
+        // The whole body reached the gateway; it now encrypts and distributes it.
+        uploadProgressBar.style.width = '100%';
+        uploadingFileName.textContent = `Cifrando y distribuyendo ${label}...`;
+      };
+      xhr.onloadend = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+        const ok = xhr.status >= 200 && xhr.status < 300;
+        if (xhr.status === 401) {
+          showLoginOverlay();
+        } else if (ok) {
+          if (!tag) showToast(`"${file.name}" subido y cifrado con éxito`);
+          loadObjectsForBucket(bucket);
+          loadStats();
+          loadAccounts();
+        } else if (xhr.status === 0) {
+          showToast('Error de subida: se perdió la conexión con el servidor', 'error');
+        } else {
+          showToast(`${file.name}: ${data.error || 'Fallo en la subida'}`, 'error');
+        }
+        resolve(ok);
+      };
+      xhr.send(formData);
+    });
   }
+
+  // --- NEW FOLDER ---
+  // Folders are key prefixes, so they only exist once a file lives in them. Creating
+  // one just opens the (still empty) path; the first upload makes it real.
+
+  const folderNameInput = document.getElementById('folderNameInput');
+  const folderPathHint = document.getElementById('folderPathHint');
+  const formCreateFolder = document.getElementById('formCreateFolder');
+
+  // "a//b/ " -> ["a","b"]; null when a segment is not usable as a folder name.
+  function parseFolderName(raw) {
+    const parts = raw.split('/').map(p => p.trim()).filter(Boolean);
+    if (parts.length === 0) return null;
+    // eslint-disable-next-line no-control-regex
+    if (parts.some(p => p === '.' || p === '..' || /[\u0000-\u001f\\]/.test(p))) return null;
+    return parts;
+  }
+
+  function folderTarget() {
+    const parts = parseFolderName(folderNameInput.value);
+    return parts ? currentPrefix + parts.join('/') + '/' : null;
+  }
+
+  document.getElementById('btnNewFolder').addEventListener('click', () => {
+    if (!activeBucket) {
+      showToast('Selecciona o crea un bucket primero', 'error');
+      return;
+    }
+    formCreateFolder.reset();
+    folderPathHint.textContent = '';
+    modalCreateFolder.classList.remove('hidden');
+    folderNameInput.focus();
+  });
+
+  folderNameInput.addEventListener('input', () => {
+    const target = folderTarget();
+    folderPathHint.textContent = target ? `Ruta: ${activeBucket}/${target}` : '';
+  });
+
+  formCreateFolder.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const target = folderTarget();
+    if (!target) {
+      showToast('Nombre de carpeta no válido', 'error');
+      return;
+    }
+    if (target.length > 900) {
+      showToast('El nombre de la carpeta es demasiado largo', 'error');
+      return;
+    }
+    modalCreateFolder.classList.add('hidden');
+    fileSearchInput.value = '';
+    currentPrefix = target;
+    loadObjectsForBucket(activeBucket);
+    showToast('Carpeta lista: sube archivos para guardarla');
+  });
 
   // Drag & drop
   uploadDropzone.addEventListener('click', () => fileUploadInput.click());
@@ -1514,9 +1600,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   fileUploadInput.addEventListener('change', () => {
-    if (fileUploadInput.files.length > 0) {
-      triggerUploadFile(fileUploadInput.files[0]);
-    }
+    triggerUploadFiles(fileUploadInput.files);
+    fileUploadInput.value = ''; // lets the same file be picked again
   });
 
   uploadDropzone.addEventListener('dragover', (e) => {
@@ -1529,9 +1614,7 @@ document.addEventListener('DOMContentLoaded', () => {
   uploadDropzone.addEventListener('drop', (e) => {
     e.preventDefault();
     uploadDropzone.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) {
-      triggerUploadFile(e.dataTransfer.files[0]);
-    }
+    triggerUploadFiles(e.dataTransfer.files);
   });
 
   // --- CONNECT TAB & SETTINGS ---
