@@ -2,7 +2,9 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#080c14" />
+  <meta name="color-scheme" content="dark" />
   <title>HF2S3: Hugging Face Multi-Account S3/R2 Cloud Gateway</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -30,29 +32,29 @@
       <nav class="nav-menu">
         <button class="nav-item active" data-tab="overview">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-          <span>Panel General</span>
+          <span class="nav-long">Panel General</span><span class="nav-short" aria-hidden="true">Inicio</span>
         </button>
         <button class="nav-item" data-tab="accounts">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-          <span>Cuentas HF</span>
+          <span class="nav-long">Cuentas HF</span><span class="nav-short" aria-hidden="true">Cuentas</span>
           <span class="pill-badge" id="navAccountsCount">0</span>
         </button>
         <button class="nav-item" data-tab="storage">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
-          <span>Buckets y Archivos</span>
+          <span class="nav-long">Buckets y Archivos</span><span class="nav-short" aria-hidden="true">Archivos</span>
         </button>
         <button class="nav-item" data-tab="shares">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
-          <span>Compartidos</span>
+          <span class="nav-long">Compartidos</span><span class="nav-short" aria-hidden="true">Enlaces</span>
           <span class="pill-badge" id="navSharesCount">0</span>
         </button>
         <button class="nav-item" data-tab="connect">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-          <span>Conexión S3 / R2</span>
+          <span class="nav-long">Conexión S3 / R2</span><span class="nav-short" aria-hidden="true">S3</span>
         </button>
         <button class="nav-item" data-tab="settings">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          <span>Configuración</span>
+          <span class="nav-long">Configuración</span><span class="nav-short" aria-hidden="true">Ajustes</span>
         </button>
       </nav>
 
@@ -845,7 +847,7 @@
       </div>
       <div class="modal-body">
         <div class="chunk-inspect-summary" id="chunkInspectSummary"></div>
-        <div class="table-container">
+        <div class="table-container keep-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -901,6 +903,8 @@
     </div>
   </div>
 
+  <script src="zoom-lock.js"></script>
+  <script src="mobile.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

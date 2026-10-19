@@ -1244,58 +1244,10 @@ body {
   color: #fff !important;
 }
 
-/* Responsive Breakpoints & Mobile Layout (R-03 / antislop-layoutmobile) */
+/* Responsive Breakpoints & Mobile Layout (R-03 / antislop-layoutmobile).
+   The app shell (top bar, bottom tab bar, cards, sheets) lives in the
+   "Mobile app shell" section at the end of this file. */
 @media (max-width: 900px) {
-  .app-layout {
-    flex-direction: column;
-  }
-
-  .sidebar {
-    width: 100%;
-    padding: 16px;
-    border-right: none;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .nav-menu {
-    flex-direction: row;
-    overflow-x: auto;
-    margin-top: 12px;
-    padding-bottom: 6px;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .nav-item {
-    padding: 8px 12px;
-    white-space: nowrap;
-    font-size: 0.85rem;
-    flex-shrink: 0;
-  }
-
-  .sidebar-footer {
-    display: none;
-  }
-
-  .main-content {
-    padding: 20px 16px;
-    height: auto;
-    min-height: calc(100vh - 120px);
-  }
-
-  .topbar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 14px;
-    margin-bottom: 20px;
-  }
-
-  .topbar-actions {
-    width: 100%;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
   .hero-metric-card {
     flex-direction: column;
     align-items: stretch;
@@ -1305,15 +1257,6 @@ body {
 
   .hero-right {
     flex-direction: column;
-  }
-
-  .storage-explorer-layout {
-    flex-direction: column;
-  }
-
-  .buckets-sidebar {
-    width: 100%;
-    max-height: 220px;
   }
 
   .connect-grid {
@@ -1340,13 +1283,6 @@ body {
   .btn-sm,
   .btn-xs {
     min-height: 38px;
-  }
-
-  .modal-card {
-    margin: 12px;
-    padding: 20px;
-    max-height: 90vh;
-    overflow-y: auto;
   }
 
   .hero-val {
@@ -1552,6 +1488,8 @@ img.share-media { object-fit: contain; }
 .share-inline .input-text { flex: 1; min-width: 0; }
 .share-check { display: flex; align-items: center; gap: 8px; font-size: 0.88rem; cursor: pointer; }
 .share-check input { accent-color: var(--accent-primary); width: 16px; height: 16px; }
+.form-group label.share-check { display: flex; } /* beats .form-group label { display: block } */
+.upload-progress-card.hidden { display: none; }
 .share-result-url { font-family: var(--font-mono); font-size: 0.8rem; }
 .share-secret-line { font-size: 0.85rem; color: var(--text-muted); margin-top: 10px; }
 .share-secret-line code { color: var(--accent-amber); }
@@ -1565,3 +1503,410 @@ img.share-media { object-fit: contain; }
 
 a.btn { text-decoration: none; }
 .files-browser { min-width: 0; } /* let the table scroll inside its card instead of widening the page */
+
+
+/* ---------------------------------------------------------------------------
+   Mobile app shell
+   Pinch zoom is blocked on touch devices (see zoom-lock.js and the viewport
+   meta). Fields stay at 16px because iOS zooms into smaller ones on focus and,
+   with zoom locked, the page could never zoom back out.
+   --------------------------------------------------------------------------- */
+:root {
+  --nav-h: 60px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+}
+
+.nav-short { display: none; }
+
+@keyframes sheetUp {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@media (pointer: coarse) {
+  html {
+    touch-action: pan-x pan-y;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+
+  .input-text,
+  .input-search,
+  .copy-input-group input,
+  input[type="text"],
+  input[type="password"],
+  input[type="search"],
+  input[type="number"],
+  input[type="email"],
+  input[type="url"],
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 900px) {
+  body { min-height: 100dvh; }
+  .app-layout { flex-direction: column; min-height: 100dvh; }
+
+  /* Top bar: brand only. Navigation moves to the bottom tab bar. */
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    padding: calc(10px + var(--safe-t)) calc(16px + var(--safe-r)) 10px calc(16px + var(--safe-l));
+    background: rgba(8, 12, 20, 0.94);
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    backdrop-filter: none; /* a filter would make the fixed tab bar position against the sidebar */
+  }
+
+  .brand { padding: 0; border-bottom: none; gap: 10px; }
+  .logo-mark { width: 32px; height: 32px; }
+  .logo-mark svg { width: 18px; height: 18px; }
+  .brand-text h1 { font-size: 1.05rem; }
+  .sidebar-footer { display: none; }
+
+  /* Bottom tab bar */
+  .nav-menu {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    flex: none;
+    flex-direction: row;
+    gap: 2px;
+    margin: 0;
+    padding: 6px calc(8px + var(--safe-r)) calc(6px + var(--safe-b)) calc(8px + var(--safe-l));
+    overflow: visible;
+    background: rgba(11, 16, 30, 0.97);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .nav-item {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 48px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 2px;
+    font-size: 0.68rem;
+    text-align: center;
+    border-left: none;
+    border-radius: var(--radius-md);
+  }
+
+  .nav-item:hover { transform: none; }
+  .nav-item svg { width: 22px; height: 22px; }
+
+  .nav-item.active {
+    background: rgba(99, 102, 241, 0.16);
+    border-left: none;
+  }
+
+  .nav-item.active svg { color: var(--accent-cyan); }
+
+  .nav-long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .nav-short { display: block; line-height: 1.1; }
+
+  .nav-item .pill-badge {
+    position: absolute;
+    top: 1px;
+    left: calc(50% + 6px);
+    margin: 0;
+    min-width: 16px;
+    padding: 1px 5px;
+    font-size: 0.62rem;
+    text-align: center;
+  }
+
+  /* Content */
+  .main-content {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 18px calc(16px + var(--safe-r)) calc(var(--nav-h) + var(--safe-b) + 28px) calc(16px + var(--safe-l));
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+
+  .topbar-title h2 { font-size: 1.35rem; }
+  .topbar-title p { font-size: 0.82rem; }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .topbar-actions .btn { justify-content: center; min-height: 44px; }
+
+  .user-chip {
+    grid-column: 1 / -1;
+    margin-left: 0;
+  }
+
+  .user-chip-name { flex: 1; }
+
+  .pane-header-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .pane-header-actions .btn { justify-content: center; }
+
+  .toast-container {
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--nav-h) + var(--safe-b) + 12px);
+  }
+
+  /* Storage explorer: bucket chips above the file list */
+  .storage-explorer-layout { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .buckets-sidebar { max-height: none; padding: 14px; }
+
+  .bucket-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .bucket-btn {
+    flex: 0 0 auto;
+    min-height: 44px;
+    gap: 10px;
+    white-space: nowrap;
+    border-color: var(--border-subtle);
+  }
+
+  .files-toolbar { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px; }
+  .files-actions { flex-direction: column; }
+  .input-search { width: 100%; min-height: 44px; }
+  .files-actions .btn { justify-content: center; }
+
+  .selection-bar {
+    position: sticky;
+    bottom: calc(var(--nav-h) + var(--safe-b) + 10px);
+    z-index: 20;
+    background: #161d3a;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+
+  .selection-bar .selection-actions { width: 100%; }
+  .selection-bar .selection-actions .btn { flex: 1; justify-content: center; }
+
+  .upload-dropzone { padding: 22px 16px; }
+
+  .row-check,
+  #selectAllFiles,
+  .share-check input { width: 22px; height: 22px; }
+
+  .form-group label.share-check { min-height: 44px; gap: 10px; }
+
+  .snippets-nav { overflow-x: auto; flex-wrap: nowrap; }
+  .snippet-tab { flex: 0 0 auto; min-height: 40px; }
+
+  /* Tables become cards: one per row, label on the left, value on the right */
+  .table-container:not(.keep-scroll) {
+    overflow: visible;
+    background: none;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .table-container:not(.keep-scroll) .data-table,
+  .table-container:not(.keep-scroll) .data-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .table-container:not(.keep-scroll) .data-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .table-container:not(.keep-scroll) .data-table tbody tr {
+    display: block;
+    margin-bottom: 12px;
+    padding: 6px 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+  }
+
+  .table-container:not(.keep-scroll) .data-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 0;
+    padding: 8px 16px;
+    font-size: 0.86rem;
+    border: none;
+    text-align: right;
+    overflow-wrap: break-word;
+    flex-wrap: wrap;
+  }
+
+  .table-container:not(.keep-scroll) .data-table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    max-width: 45%;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    text-align: left;
+    color: var(--text-dim);
+  }
+
+  .table-container:not(.keep-scroll) .data-table td:not([data-label])::before { content: none; }
+
+  .table-container:not(.keep-scroll) .data-table td:first-child {
+    justify-content: flex-start;
+    text-align: left;
+    font-size: 0.95rem;
+    color: var(--text-main);
+  }
+
+  .table-container:not(.keep-scroll) .data-table td:last-child {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .table-container:not(.keep-scroll) .data-table td:last-child::before { content: none; }
+
+  .table-container:not(.keep-scroll) .data-table td:last-child .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-height: 40px;
+  }
+
+  .table-container:not(.keep-scroll) .data-table td.empty-state {
+    justify-content: center;
+    padding: 32px 16px !important;
+    margin-top: 0;
+    border-top: none;
+    text-align: center;
+  }
+
+  /* File list: checkbox + name on top, details below, actions last */
+  #filesTableBody tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  #filesTableBody td { grid-column: 1 / -1; }
+  #filesTableBody td.check-col { grid-column: 1; width: auto; padding-right: 0; }
+
+  #filesTableBody td:nth-child(2) {
+    grid-column: 2;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  #filesTableBody td:nth-child(2)::before { content: none; } /* the name needs no label */
+
+  #filesTableBody td:nth-child(5),
+  #filesTableBody td:nth-child(6) { display: none; } /* ETag and type: too wide for a card */
+
+  #filesTableBody td.empty-state { grid-column: 1 / -1; }
+
+  .data-table:has(#filesTableBody) thead {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    margin-bottom: 10px;
+  }
+
+  .data-table:has(#filesTableBody) thead tr {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 4px;
+  }
+
+  .data-table:has(#filesTableBody) thead th { display: none; }
+
+  .data-table:has(#filesTableBody) thead th.check-col {
+    display: block;
+    width: auto;
+    padding: 0;
+    background: none;
+    border: none;
+  }
+
+  .data-table:has(#filesTableBody) thead tr::after {
+    content: "Seleccionar todo";
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  /* Shared-link page */
+  .share-shell { padding-bottom: calc(36px + var(--safe-b)); }
+}
+
+@media (max-width: 600px) {
+  .accounts-grid { grid-template-columns: 1fr; }
+
+  /* Dialogs slide up from the bottom edge */
+  .modal-overlay { align-items: flex-end; }
+
+  .modal-card {
+    max-width: none;
+    max-height: 92dvh;
+    margin: 0;
+    padding: 20px 18px calc(20px + var(--safe-b));
+    overflow-y: auto;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    animation: sheetUp 0.25s ease;
+  }
+
+  .modal-close { min-width: 44px; min-height: 44px; font-size: 1.8rem; }
+  .modal-actions { flex-direction: column-reverse; }
+  .modal-actions .btn { width: 100%; justify-content: center; min-height: 44px; }
+
+  .login-overlay { align-items: flex-start; overflow-y: auto; padding: calc(24px + var(--safe-t)) 16px calc(24px + var(--safe-b)); }
+  .login-card { margin: auto; padding: 28px 20px; }
+}
