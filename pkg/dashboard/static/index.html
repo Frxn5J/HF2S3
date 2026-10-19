@@ -41,6 +41,11 @@
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
           <span>Buckets y Archivos</span>
         </button>
+        <button class="nav-item" data-tab="shares">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+          <span>Compartidos</span>
+          <span class="pill-badge" id="navSharesCount">0</span>
+        </button>
         <button class="nav-item" data-tab="connect">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
           <span>Conexión S3 / R2</span>
@@ -262,6 +267,21 @@
               </div>
             </div>
 
+            <!-- Folder path -->
+            <nav class="file-breadcrumb" id="fileBreadcrumb" aria-label="Carpeta actual"></nav>
+
+            <!-- Appears when files or folders are ticked -->
+            <div class="selection-bar is-hidden" id="selectionBar">
+              <span id="selectionCount">0 seleccionados</span>
+              <div class="selection-actions">
+                <button class="btn btn-primary btn-sm" id="btnShareSelected">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+                  <span>Compartir</span>
+                </button>
+                <button class="btn btn-secondary btn-sm" id="btnClearSelection">Quitar selección</button>
+              </div>
+            </div>
+
             <!-- Upload drag dropzone -->
             <div class="upload-dropzone" id="uploadDropzone">
               <input type="file" id="fileUploadInput" hidden />
@@ -283,6 +303,7 @@
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th class="check-col"><input type="checkbox" id="selectAllFiles" aria-label="Seleccionar todo" /></th>
                     <th>Nombre de Archivo</th>
                     <th>Tamaño</th>
                     <th>Nivel / Caché</th>
@@ -294,12 +315,40 @@
                 </thead>
                 <tbody id="filesTableBody">
                   <tr>
-                    <td colspan="7" class="empty-state">Selecciona un bucket para explorar sus archivos</td>
+                    <td colspan="8" class="empty-state">Selecciona un bucket para explorar sus archivos</td>
                   </tr>
                 </tbody>
               </table>
             </div>
+            <div class="share-more is-hidden" id="filesMoreWrap">
+              <button class="btn btn-secondary btn-sm" id="btnFilesMore">Cargar más</button>
+            </div>
           </div>
+        </div>
+      </section>
+
+      <!-- TAB: SHARED LINKS -->
+      <section class="tab-pane" id="pane-shares">
+        <div class="glass-card" style="margin-bottom:16px;">
+          <p style="font-size:0.88rem;color:var(--text-muted);">Para crear un enlace, ve a <strong>Buckets y Archivos</strong>, marca los archivos o carpetas y pulsa <strong>Compartir</strong>. Quien tenga el enlace solo puede ver y descargar lo que incluiste; los vídeos se reproducen en la propia página.</p>
+        </div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Contenido</th>
+                <th>Bucket</th>
+                <th>Caduca</th>
+                <th>Contraseña</th>
+                <th>Descargas</th>
+                <th>Creado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="sharesTableBody">
+              <tr><td colspan="7" class="empty-state">Aún no has compartido nada</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -691,6 +740,79 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- MODAL: SHARE FILES -->
+  <div class="modal-overlay hidden" id="modalShare" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="shareModalTitle">Compartir</h3>
+        <button class="modal-close" data-close="modalShare" aria-label="Cerrar">&times;</button>
+      </div>
+
+      <!-- Step 2: configuration -->
+      <form id="formShare">
+        <div class="form-group">
+          <label>Se compartirá</label>
+          <ul class="share-items-summary" id="shareItemsSummary"></ul>
+        </div>
+        <div class="form-group">
+          <label for="shareTitleInput">Título (opcional)</label>
+          <input type="text" class="input-text" id="shareTitleInput" maxlength="120" placeholder="ej. Fotos del viaje" />
+        </div>
+        <div class="form-group">
+          <label for="shareExpirySelect">Duración del enlace</label>
+          <select class="input-text" id="shareExpirySelect">
+            <option value="3600">1 hora</option>
+            <option value="86400">1 día</option>
+            <option value="604800" selected>7 días</option>
+            <option value="2592000">30 días</option>
+            <option value="custom">Personalizada…</option>
+            <option value="0">Sin caducidad</option>
+          </select>
+          <div class="share-inline is-hidden" id="shareCustomWrap" style="margin-top:8px;">
+            <input type="number" class="input-text" id="shareCustomValue" min="1" value="2" aria-label="Cantidad" />
+            <select class="input-text" id="shareCustomUnit" aria-label="Unidad">
+              <option value="60">minutos</option>
+              <option value="3600">horas</option>
+              <option value="86400" selected>días</option>
+            </select>
+          </div>
+          <span class="field-hint" id="shareExpiryHint">Pasado ese tiempo el enlace deja de funcionar.</span>
+        </div>
+        <div class="form-group">
+          <label class="share-check">
+            <input type="checkbox" id="sharePasswordToggle" />
+            <span>Proteger con contraseña</span>
+          </label>
+          <div class="share-inline is-hidden" id="sharePasswordWrap" style="margin-top:8px;">
+            <input type="text" class="input-text" id="sharePasswordInput" minlength="6" maxlength="200" autocomplete="off" placeholder="Mínimo 6 caracteres" />
+            <button type="button" class="btn btn-secondary btn-sm" id="btnSharePasswordGen">Generar</button>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close="modalShare">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitShare">Crear enlace</button>
+        </div>
+      </form>
+
+      <!-- Step 3: the link -->
+      <div class="is-hidden" id="shareResult">
+        <div class="form-group">
+          <label for="shareResultUrl">Enlace para compartir</label>
+          <div class="share-inline">
+            <input type="text" class="input-text share-result-url" id="shareResultUrl" readonly />
+            <button type="button" class="btn btn-primary btn-sm" id="btnCopyShareUrl">Copiar</button>
+          </div>
+          <span class="field-hint" id="shareResultMeta"></span>
+          <p class="share-secret-line is-hidden" id="shareResultPasswordLine">Contraseña: <code id="shareResultPassword"></code> <button type="button" class="btn btn-xs btn-outline" id="btnCopySharePassword">Copiar</button><br /><span class="field-hint">No se puede volver a consultar: guárdala ahora.</span></p>
+        </div>
+        <div class="modal-actions">
+          <a class="btn btn-secondary" id="btnOpenShareUrl" href="#" target="_blank" rel="noopener noreferrer">Abrir</a>
+          <button type="button" class="btn btn-primary" data-close="modalShare">Listo</button>
+        </div>
+      </div>
     </div>
   </div>
 

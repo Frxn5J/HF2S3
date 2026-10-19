@@ -27,6 +27,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentTab = 'overview';
   let activeBucket = null;
   let allFiles = [];
+  let allFolders = [];
+  let currentPrefix = '';          // folder being browsed ('' = bucket root, otherwise ends in '/')
+  let folderNext = '';             // cursor for the next page of the folder listing
+  const selection = new Map();     // ticked rows: 'f:<key>' or 'd:<prefix>' -> {key, is_prefix}
   let accountsCache = [];
   let settingsCache = {};
 
@@ -156,6 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
     overview: { title: 'Panel General', sub: 'Monitoreo del pool unificado de almacenamiento y nodos Hugging Face' },
     accounts: { title: 'Cuentas Hugging Face', sub: 'Gestiona tokens y repositorios privados de cada cuenta asociada' },
     storage: { title: 'Buckets y Explorador de Archivos', sub: 'Navega, sube y descarga objetos cifrados en tus buckets S3' },
+    shares: { title: 'Enlaces Compartidos', sub: 'Enlaces temporales para compartir archivos y carpetas con quien quieras' },
     connect: { title: 'Conexión S3 / R2 Compatible', sub: 'Parámetros y configuraciones para montar y usar en cualquier cliente' },
     settings: { title: 'Configuraciones del Servidor', sub: 'Ajustes de credenciales de acceso y motor criptográfico' }
   };
@@ -871,6 +876,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function selectBucket(name) {
+    if (activeBucket !== name) {
+      currentPrefix = '';
+      selection.clear();
+    }
     activeBucket = name;
     activeBucketName.textContent = name;
     document.querySelectorAll('.bucket-btn').forEach(btn => {
@@ -905,27 +914,109 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  async function loadObjectsForBucket(bucket) {
+  // Lists the current folder of the bucket (sub-folders collapsed, like a file manager).
+  // With a cursor it appends the next page instead of replacing the listing.
+  async function loadObjectsForBucket(bucket, cursor) {
     try {
-      filesTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">Cargando archivos...</td></tr>';
-      const res = await fetch(`/api/objects?bucket=${encodeURIComponent(bucket)}`);
+      if (!cursor) {
+        filesTableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Cargando archivos...</td></tr>';
+      }
+      const qs = `bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(currentPrefix)}` +
+        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+      const res = await fetch(`/api/folders?${qs}`);
       if (!res.ok) return;
-      allFiles = await res.json() || [];
-      activeBucketStats.textContent = `${allFiles.length} archivo(s)`;
-      renderFiles(allFiles);
+      const page = await res.json();
+      allFolders = cursor ? allFolders.concat(page.folders || []) : (page.folders || []);
+      allFiles = cursor ? allFiles.concat(page.objects || []) : (page.objects || []);
+      folderNext = page.next || '';
+      const more = folderNext ? '+' : '';
+      activeBucketStats.textContent = `${allFolders.length}${more} carpeta(s), ${allFiles.length}${more} archivo(s)`;
+      renderBreadcrumb();
+      applyFileFilter();
     } catch (e) {
       console.error('Failed to load objects', e);
     }
   }
 
-  function renderFiles(files) {
+  function openFolder(prefix) {
+    currentPrefix = prefix;
+    fileSearchInput.value = '';
+    loadObjectsForBucket(activeBucket);
+  }
+
+  function renderBreadcrumb() {
+    const nav = document.getElementById('fileBreadcrumb');
+    nav.textContent = '';
+    const trail = [{ name: activeBucket, prefix: '' }];
+    let acc = '';
+    currentPrefix.split('/').filter(Boolean).forEach(seg => {
+      acc += seg + '/';
+      trail.push({ name: seg, prefix: acc });
+    });
+    trail.forEach((c, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'share-crumb-sep';
+        sep.textContent = '/';
+        nav.appendChild(sep);
+      }
+      const node = document.createElement(i === trail.length - 1 ? 'span' : 'button');
+      node.className = 'share-crumb' + (i === trail.length - 1 ? ' current' : '');
+      node.textContent = c.name;
+      if (i < trail.length - 1) {
+        node.type = 'button';
+        node.addEventListener('click', () => openFolder(c.prefix));
+      }
+      nav.appendChild(node);
+    });
+  }
+
+  function applyFileFilter() {
+    const q = fileSearchInput.value.toLowerCase().trim();
+    if (!q) {
+      renderFiles(allFiles, allFolders);
+    } else {
+      renderFiles(
+        allFiles.filter(f => f.key.toLowerCase().includes(q)),
+        allFolders.filter(d => d.toLowerCase().includes(q))
+      );
+    }
+  }
+
+  function folderName(prefix) {
+    return prefix.slice(currentPrefix.length).replace(/\/$/, '');
+  }
+
+  function renderFiles(files, folders) {
+    folders = folders || [];
     filesTableBody.innerHTML = '';
-    if (!files || files.length === 0) {
-      filesTableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Este bucket no contiene archivos aún. Sube uno arrastrándolo arriba.</td></tr>';
+    document.getElementById('filesMoreWrap').classList.toggle('is-hidden', !folderNext);
+    updateSelectionBar();
+    if ((!files || files.length === 0) && folders.length === 0) {
+      filesTableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Esta carpeta no contiene archivos aún. Sube uno arrastrándolo arriba.</td></tr>';
       return;
     }
 
-    files.forEach(f => {
+    folders.forEach(prefix => {
+      const id = 'd:' + prefix;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="check-col"><input type="checkbox" class="row-check" data-id="${escapeHtml(id)}" data-key="${escapeHtml(prefix)}" data-prefix="1" aria-label="Seleccionar carpeta" ${selection.has(id) ? 'checked' : ''} /></td>
+        <td colspan="5">
+          <button class="folder-link" data-prefix="${escapeHtml(prefix)}">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+            <strong>${escapeHtml(folderName(prefix))}</strong>
+          </button>
+        </td>
+        <td>
+          <button class="btn btn-xs btn-outline btn-open-folder" data-prefix="${escapeHtml(prefix)}">Abrir</button>
+          <button class="btn btn-xs btn-primary btn-share-folder" data-prefix="${escapeHtml(prefix)}" title="Crear un enlace para compartir esta carpeta">Compartir</button>
+        </td>
+      `;
+      filesTableBody.appendChild(tr);
+    });
+
+    (files || []).forEach(f => {
       let tierBadges = '<span class="tier-badge tier-none">Sin Ubicación</span>';
       if (f.has_cache || f.has_cold) {
         tierBadges = '<div class="tier-badges-wrap">';
@@ -946,11 +1037,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const tr = document.createElement('tr');
+      const fileId = 'f:' + f.key;
       tr.innerHTML = `
+        <td class="check-col"><input type="checkbox" class="row-check" data-id="${escapeHtml(fileId)}" data-key="${escapeHtml(f.key)}" aria-label="Seleccionar archivo" ${selection.has(fileId) ? 'checked' : ''} /></td>
         <td>
           <span class="file-key-cell">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
-            <strong>${escapeHtml(f.key)}</strong>
+            <strong>${escapeHtml(f.key.slice(currentPrefix.length))}</strong>
           </span>
         </td>
         <td>${formatBytes(f.size)}</td>
@@ -959,6 +1052,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td><span style="font-size:0.75rem;color:var(--text-dim)">${escapeHtml(f.content_type || 'binary')}</span></td>
         <td><span style="font-size:0.78rem">${new Date(f.updated_at).toLocaleString()}</span></td>
         <td>
+          <button class="btn btn-xs btn-primary btn-share-file" data-key="${escapeHtml(f.key)}" title="Crear un enlace para compartir este archivo (con caducidad y contraseña opcionales)">Compartir</button>
           <button class="btn btn-xs btn-outline btn-stream-file" data-key="${escapeHtml(f.key)}" title="Genera un enlace firmado con caducidad para reproducir o descargar">Enlace</button>
           <button class="btn btn-xs btn-secondary btn-dl-file" data-key="${escapeHtml(f.key)}">Descargar</button>
           ${cacheActionBtn}
@@ -967,6 +1061,27 @@ document.addEventListener('DOMContentLoaded', () => {
         </td>
       `;
       filesTableBody.appendChild(tr);
+    });
+
+    // Selection, folders and sharing
+    filesTableBody.querySelectorAll('.row-check').forEach(box => {
+      box.addEventListener('change', () => {
+        if (box.checked) {
+          selection.set(box.dataset.id, { key: box.dataset.key, is_prefix: !!box.dataset.prefix });
+        } else {
+          selection.delete(box.dataset.id);
+        }
+        updateSelectionBar();
+      });
+    });
+    filesTableBody.querySelectorAll('.folder-link, .btn-open-folder').forEach(btn => {
+      btn.addEventListener('click', () => openFolder(btn.dataset.prefix));
+    });
+    filesTableBody.querySelectorAll('.btn-share-folder').forEach(btn => {
+      btn.addEventListener('click', () => openShareModal([{ key: btn.dataset.prefix, is_prefix: true }]));
+    });
+    filesTableBody.querySelectorAll('.btn-share-file').forEach(btn => {
+      btn.addEventListener('click', () => openShareModal([{ key: btn.dataset.key, is_prefix: false }]));
     });
 
     // Actions
@@ -1005,6 +1120,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const key = btn.dataset.key;
         if (!confirm(`¿Eliminar ${key} de ${activeBucket}? Los chunks se liberarán de Hugging Face.`)) return;
         await fetch(`/api/objects?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(key)}`, { method: 'DELETE' });
+        selection.delete(`f:${key}`);
         showToast(`Archivo ${key} eliminado`);
         loadObjectsForBucket(activeBucket);
         loadStats();
@@ -1071,15 +1187,228 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Filter files
-  fileSearchInput.addEventListener('input', () => {
-    const q = fileSearchInput.value.toLowerCase().trim();
-    if (!q) {
-      renderFiles(allFiles);
-    } else {
-      const filtered = allFiles.filter(f => f.key.toLowerCase().includes(q));
-      renderFiles(filtered);
+  fileSearchInput.addEventListener('input', applyFileFilter);
+
+  document.getElementById('btnFilesMore').addEventListener('click', () => {
+    if (folderNext) loadObjectsForBucket(activeBucket, folderNext);
+  });
+
+  // --- SELECTION & SHARING ---
+
+  const selectionBar = document.getElementById('selectionBar');
+  const selectAllFiles = document.getElementById('selectAllFiles');
+
+  function updateSelectionBar() {
+    const n = selection.size;
+    selectionBar.classList.toggle('is-hidden', n === 0);
+    document.getElementById('selectionCount').textContent = n === 1 ? '1 elemento seleccionado' : `${n} elementos seleccionados`;
+    const boxes = filesTableBody.querySelectorAll('.row-check');
+    selectAllFiles.checked = boxes.length > 0 && Array.from(boxes).every(b => b.checked);
+  }
+
+  selectAllFiles.addEventListener('change', () => {
+    filesTableBody.querySelectorAll('.row-check').forEach(box => {
+      box.checked = selectAllFiles.checked;
+      if (box.checked) {
+        selection.set(box.dataset.id, { key: box.dataset.key, is_prefix: !!box.dataset.prefix });
+      } else {
+        selection.delete(box.dataset.id);
+      }
+    });
+    updateSelectionBar();
+  });
+
+  document.getElementById('btnClearSelection').addEventListener('click', () => {
+    selection.clear();
+    filesTableBody.querySelectorAll('.row-check').forEach(box => { box.checked = false; });
+    updateSelectionBar();
+  });
+
+  document.getElementById('btnShareSelected').addEventListener('click', () => {
+    openShareModal(Array.from(selection.values()));
+  });
+
+  const modalShare = document.getElementById('modalShare');
+  const formShare = document.getElementById('formShare');
+  const shareResult = document.getElementById('shareResult');
+  const shareExpirySelect = document.getElementById('shareExpirySelect');
+  const shareCustomWrap = document.getElementById('shareCustomWrap');
+  const sharePasswordToggle = document.getElementById('sharePasswordToggle');
+  const sharePasswordWrap = document.getElementById('sharePasswordWrap');
+  const sharePasswordInput = document.getElementById('sharePasswordInput');
+  let shareDraft = null; // {bucket, items} of the dialog that is open
+
+  function openShareModal(items) {
+    if (!activeBucket || !items.length) return;
+    shareDraft = { bucket: activeBucket, items };
+    formShare.reset();
+    shareCustomWrap.classList.add('is-hidden');
+    sharePasswordWrap.classList.add('is-hidden');
+    formShare.classList.remove('is-hidden');
+    shareResult.classList.add('is-hidden');
+    document.getElementById('shareModalTitle').textContent = items.length === 1 ? 'Compartir' : `Compartir ${items.length} elementos`;
+
+    const list = document.getElementById('shareItemsSummary');
+    list.textContent = '';
+    items.forEach(it => {
+      const li = document.createElement('li');
+      li.textContent = (it.is_prefix ? '📁 ' : '📄 ') + it.key;
+      list.appendChild(li);
+    });
+    modalShare.classList.remove('hidden');
+  }
+
+  shareExpirySelect.addEventListener('change', () => {
+    shareCustomWrap.classList.toggle('is-hidden', shareExpirySelect.value !== 'custom');
+    document.getElementById('shareExpiryHint').textContent = shareExpirySelect.value === '0'
+      ? 'El enlace funcionará hasta que lo revoques en la pestaña Compartidos.'
+      : 'Pasado ese tiempo el enlace deja de funcionar.';
+  });
+
+  sharePasswordToggle.addEventListener('change', () => {
+    sharePasswordWrap.classList.toggle('is-hidden', !sharePasswordToggle.checked);
+    sharePasswordInput.required = sharePasswordToggle.checked;
+    if (sharePasswordToggle.checked) sharePasswordInput.focus();
+  });
+
+  document.getElementById('btnSharePasswordGen').addEventListener('click', () => {
+    // No look-alike characters (0/O, 1/l/I): people retype this on a phone.
+    const alphabet = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    sharePasswordInput.value = Array.from(bytes, b => alphabet[b % alphabet.length]).join('');
+  });
+
+  function shareSeconds() {
+    if (shareExpirySelect.value !== 'custom') return parseInt(shareExpirySelect.value, 10);
+    const n = parseInt(document.getElementById('shareCustomValue').value, 10);
+    return (n > 0 ? n : 0) * parseInt(document.getElementById('shareCustomUnit').value, 10);
+  }
+
+  function describeShareExpiry(iso) {
+    return iso ? `Caduca el ${new Date(iso).toLocaleString()}` : 'Sin caducidad';
+  }
+
+  async function copyText(text, okMsg) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(okMsg);
+    } catch (e) {
+      showToast('No se pudo copiar automáticamente; selecciónalo y cópialo a mano', 'error');
+    }
+  }
+
+  formShare.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!shareDraft) return;
+    const seconds = shareSeconds();
+    if (shareExpirySelect.value !== '0' && seconds < 60) {
+      showToast('La duración mínima es de 1 minuto', 'error');
+      return;
+    }
+    const password = sharePasswordToggle.checked ? sharePasswordInput.value : '';
+    const submit = document.getElementById('btnSubmitShare');
+    submit.disabled = true;
+    try {
+      const res = await fetch('/api/shares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bucket: shareDraft.bucket,
+          items: shareDraft.items,
+          title: document.getElementById('shareTitleInput').value,
+          expires_in_seconds: seconds,
+          password
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'No se pudo crear el enlace', 'error');
+        return;
+      }
+      document.getElementById('shareResultUrl').value = data.url;
+      document.getElementById('btnOpenShareUrl').href = data.url;
+      document.getElementById('shareResultMeta').textContent =
+        `${describeShareExpiry(data.expires_at)} · ${password ? 'protegido con contraseña' : 'sin contraseña'}`;
+      const line = document.getElementById('shareResultPasswordLine');
+      line.classList.toggle('is-hidden', !password);
+      document.getElementById('shareResultPassword').textContent = password;
+      formShare.classList.add('is-hidden');
+      shareResult.classList.remove('is-hidden');
+      selection.clear();
+      filesTableBody.querySelectorAll('.row-check').forEach(box => { box.checked = false; });
+      updateSelectionBar();
+      loadShares();
+    } catch (err) {
+      showToast('Error de comunicación con el servidor', 'error');
+    } finally {
+      submit.disabled = false;
     }
   });
+
+  document.getElementById('btnCopyShareUrl').addEventListener('click', () => {
+    copyText(document.getElementById('shareResultUrl').value, 'Enlace copiado');
+  });
+  document.getElementById('btnCopySharePassword').addEventListener('click', () => {
+    copyText(document.getElementById('shareResultPassword').textContent, 'Contraseña copiada');
+  });
+  document.getElementById('shareResultUrl').addEventListener('focus', (e) => e.target.select());
+
+  // Shared links tab
+  const sharesTableBody = document.getElementById('sharesTableBody');
+  const navSharesCount = document.getElementById('navSharesCount');
+
+  function summarizeShare(s) {
+    const names = s.items.map(it => it.key.replace(/\/$/, '').split('/').pop() + (it.is_prefix ? '/' : ''));
+    const head = names.slice(0, 2).join(', ');
+    return (s.title ? s.title + ' — ' : '') + head + (names.length > 2 ? ` y ${names.length - 2} más` : '');
+  }
+
+  async function loadShares() {
+    try {
+      const res = await fetch('/api/shares');
+      if (!res.ok) return;
+      const shares = await res.json();
+      navSharesCount.textContent = shares.filter(s => !s.expired).length;
+      sharesTableBody.innerHTML = '';
+      if (!shares.length) {
+        sharesTableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Aún no has compartido nada</td></tr>';
+        return;
+      }
+      shares.forEach(s => {
+        const tr = document.createElement('tr');
+        const status = s.expired
+          ? '<span class="badge-inactive">Caducado</span>'
+          : escapeHtml(s.expires_at ? new Date(s.expires_at).toLocaleString() : 'Nunca');
+        tr.innerHTML = `
+          <td><span class="share-link-cell" title="${escapeHtml(s.items.map(i => i.key).join('\n'))}">${escapeHtml(summarizeShare(s))}</span></td>
+          <td>${escapeHtml(s.bucket)}</td>
+          <td>${status}</td>
+          <td>${s.has_password ? '🔒 Sí' : 'No'}</td>
+          <td>${Number(s.downloads)}</td>
+          <td><span style="font-size:0.78rem">${escapeHtml(new Date(s.created_at).toLocaleString())}</span></td>
+          <td>
+            <button class="btn btn-xs btn-outline btn-copy-share">Copiar enlace</button>
+            <a class="btn btn-xs btn-secondary" href="${escapeHtml(s.url)}" target="_blank" rel="noopener noreferrer">Abrir</a>
+            <button class="btn btn-xs btn-danger btn-revoke-share">Revocar</button>
+          </td>
+        `;
+        tr.querySelector('.btn-copy-share').addEventListener('click', () => copyText(s.url, 'Enlace copiado'));
+        tr.querySelector('.btn-revoke-share').addEventListener('click', async () => {
+          if (!confirm('¿Revocar este enlace? Dejará de funcionar de inmediato para quien lo tenga.')) return;
+          const r = await fetch(`/api/shares/${s.id}`, { method: 'DELETE' });
+          if (r.ok) {
+            showToast('Enlace revocado');
+            loadShares();
+          } else {
+            showToast('No se pudo revocar el enlace', 'error');
+          }
+        });
+        sharesTableBody.appendChild(tr);
+      });
+    } catch (e) {
+      console.error('Failed to load shares', e);
+    }
+  }
 
   // Inspect Chunks Modal
   async function inspectChunks(key) {
@@ -1134,7 +1463,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const formData = new FormData();
     formData.append('bucket', bucket);
-    formData.append('key', file.name);
+    formData.append('key', currentPrefix + file.name);
     formData.append('file', file);
 
     const xhr = new XMLHttpRequest();
@@ -1647,6 +1976,8 @@ document.addEventListener('DOMContentLoaded', () => {
       loadCacheBuckets();
     } else if (currentTab === 'storage') {
       loadBuckets();
+    } else if (currentTab === 'shares') {
+      loadShares();
     } else if (currentTab === 'connect' || currentTab === 'settings') {
       loadSettings();
     }
@@ -1743,6 +2074,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCacheBuckets();
     loadBuckets();
     loadSettings();
+    loadShares();
   }
 
   // Initial Boot with Auth Verification

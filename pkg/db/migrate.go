@@ -167,6 +167,30 @@ var migrations = []migration{
 			`ALTER TABLE multipart_uploads ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 3,
+		stmts: []string{
+			// Shared links. The token is looked up by its hash and kept sealed so
+			// the admin can copy a link again without the table exposing live links.
+			`CREATE TABLE IF NOT EXISTS shares (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				token_hash TEXT NOT NULL UNIQUE,
+				token_sealed TEXT NOT NULL,
+				bucket TEXT NOT NULL,
+				title TEXT NOT NULL DEFAULT '',
+				password_hash TEXT NOT NULL DEFAULT '',
+				expires_at DATETIME,
+				downloads INTEGER NOT NULL DEFAULT 0,
+				created_at DATETIME NOT NULL
+			)`,
+			`CREATE TABLE IF NOT EXISTS share_items (
+				share_id INTEGER NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+				key TEXT NOT NULL,
+				is_prefix INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (share_id, key, is_prefix)
+			)`,
+		},
+	},
 }
 
 // SchemaVersion is the newest schema version this binary understands.

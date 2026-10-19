@@ -67,6 +67,10 @@ type DashboardHandler struct {
 
 	drainMu sync.Mutex
 	drains  map[int64]*drainState
+
+	shareSess      *shareSessions // browsers that unlocked a password-protected link
+	shareIPLimiter *loginLimiter  // failed unlocks per client and link
+	shareLimiter   *loginLimiter  // failed unlocks per link, from anywhere
 }
 
 func NewDashboardHandler(pool *storage.PoolManager, settings *models.SystemSettings, serverPort int, adminAuth *AdminAuthManager) *DashboardHandler {
@@ -83,13 +87,16 @@ func NewDashboardHandler(pool *storage.PoolManager, settings *models.SystemSetti
 	}
 
 	return &DashboardHandler{
-		pool:       pool,
-		settings:   settings,
-		adminAuth:  adminAuth,
-		serverPort: serverPort,
-		fileServer: fsHandler,
-		envManaged: map[string]bool{},
-		drains:     map[int64]*drainState{},
+		pool:           pool,
+		settings:       settings,
+		adminAuth:      adminAuth,
+		serverPort:     serverPort,
+		fileServer:     fsHandler,
+		envManaged:     map[string]bool{},
+		drains:         map[int64]*drainState{},
+		shareSess:      newShareSessions(),
+		shareIPLimiter: newShareLimiter(5),
+		shareLimiter:   newShareLimiter(30),
 	}
 }
 
@@ -178,6 +185,10 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/objects/download", auth(h.handleDownloadObject))
 	mux.HandleFunc("DELETE /api/objects", auth(h.handleDeleteObject))
 	mux.HandleFunc("POST /api/objects/presign", auth(h.handlePresign))
+	mux.HandleFunc("GET /api/folders", auth(h.handleListFolder))
+	mux.HandleFunc("GET /api/shares", auth(h.handleListShares))
+	mux.HandleFunc("POST /api/shares", auth(h.handleCreateShare))
+	mux.HandleFunc("DELETE /api/shares/{id}", auth(h.handleDeleteShare))
 
 	// Multi-tier cache and maintenance
 	mux.HandleFunc("POST /api/objects/evict-cache", auth(h.handleEvictCache))
@@ -196,6 +207,15 @@ func (h *DashboardHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/restore", auth(h.handleRestoreUpload))
 	mux.HandleFunc("POST /api/admin/restore/apply", auth(h.handleRestoreApply))
 	mux.HandleFunc("DELETE /api/admin/restore", auth(h.handleRestoreCancel))
+
+	// Public shared links (the token in the URL is the credential)
+	mux.HandleFunc("GET /s/{token}", h.handleSharePage)
+	mux.HandleFunc("GET /s/{token}/{$}", h.handleSharePage)
+	mux.HandleFunc("GET /s/{token}/info", h.handleShareInfo)
+	mux.HandleFunc("POST /s/{token}/unlock", h.handleShareUnlock)
+	mux.HandleFunc("GET /s/{token}/list", h.handleShareList)
+	mux.HandleFunc("GET /s/{token}/file", h.handleShareFile)
+	mux.HandleFunc("GET /s/{token}/zip", h.handleShareZip)
 
 	// Static UI assets and SPA fallback
 	mux.Handle("/", h.fileServer)

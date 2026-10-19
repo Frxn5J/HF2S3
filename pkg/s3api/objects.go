@@ -77,6 +77,13 @@ func parseRange(header string, size int64) (*storage.ByteRange, rangeResult) {
 	return &storage.ByteRange{Start: start, End: end}, rangeOK
 }
 
+// ParseRange is parseRange for handlers outside this package (shared links):
+// a nil range means "serve the whole object", unsatisfiable asks for a 416.
+func ParseRange(header string, size int64) (br *storage.ByteRange, unsatisfiable bool) {
+	br, res := parseRange(header, size)
+	return br, res == rangeUnsatisfiable
+}
+
 func etagMatches(header, etag string) bool {
 	if header == "" {
 		return false

@@ -117,6 +117,8 @@ func (d *DB) DeleteBucket(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 	d.bucketCache.Delete(name)
+	// An empty bucket can't serve anything: drop the links that pointed into it.
+	_, _ = d.db.ExecContext(ctx, `DELETE FROM shares WHERE bucket = ?`, name)
 	return nil
 }
 

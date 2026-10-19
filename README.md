@@ -136,6 +136,23 @@ Para usar el alias `/media`, apunta el cliente a `https://s3.tudominio.com/media
 
 No implementado (responde `501 NotImplemented` en lugar de aparentar soporte): `CopyObject`/`UploadPartCopy`, versionado, ACL, etiquetas, políticas, `ListParts`/`ListMultipartUploads`. Los buckets llamados `media`, `api` y `static` están reservados.
 
+## Compartir archivos con un enlace
+
+Desde el panel (**Buckets y Archivos**): marca archivos o carpetas, pulsa **Compartir**, elige título, duración (1 hora, 1 día, 7 días, 30 días, personalizada o sin caducidad) y, si quieres, una contraseña. Se genera un enlace `https://tu-dominio/s/<token>`. La pestaña **Compartidos** lista los enlaces, cuántas descargas llevan y permite copiarlos o **revocarlos** al instante.
+
+Quien abre el enlace ve una página con el mismo estilo del panel, solo lectura: navega por las carpetas, **reproduce vídeo, audio e imágenes** sin salir de la página, descarga archivos sueltos o una carpeta entera en `.zip`.
+
+| Aspecto | Comportamiento |
+|---|---|
+| Token | 128 bits aleatorios. En la base de datos se busca por su hash y se guarda cifrado; no aparece en los logs (`/s/…/`). |
+| Contraseña | PBKDF2-SHA256. Se pide una vez y se recuerda 12 h en una cookie `HttpOnly` limitada a ese enlace. Máx. 5 intentos fallidos por cada 5 min y cliente, y 30 por enlace. |
+| Alcance | Solo las claves incluidas. Una carpeta compartida es dinámica: los archivos que subas después a ella también quedan accesibles. |
+| Caducidad | Pasada la fecha responde `410`. Revocar borra el enlace y sus sesiones. |
+| Ancho de banda | Si el archivo está en la caché (Tier 1) se redirige (302) al bucket con una URL que no vive más que el enlace (máx. 1 h); si no, la pasarela lo sirve con soporte de `Range` (saltos en el vídeo). |
+| Contenido activo | Solo se muestran en línea tipos de medios de una lista cerrada (vídeo, audio, PNG/JPEG/GIF/WebP/AVIF). HTML, SVG y demás siempre se descargan como binario opaco. |
+
+Límites a tener en cuenta: quien tenga el enlace (y la contraseña) puede reenviarlo; si el archivo está en la caché, la URL directa del bucket sigue válida hasta su propia caducidad aunque revoques el enlace (como máximo 1 h). Un `.zip` admite hasta 20 000 archivos.
+
 ## Desarrollo
 
 ```bash

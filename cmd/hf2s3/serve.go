@@ -51,9 +51,11 @@ func routeOf(path string) string {
 		return "api"
 	case strings.HasPrefix(path, "/media/"):
 		return "media"
+	case strings.HasPrefix(path, "/s/"):
+		return "share"
 	case path == "/metrics":
 		return "metrics"
-	case path == "/style.css", path == "/app.js", path == "/favicon.ico", strings.HasPrefix(path, "/static/"):
+	case path == "/style.css", path == "/app.js", path == "/share.js", path == "/favicon.ico", strings.HasPrefix(path, "/static/"):
 		return "static"
 	}
 	return "s3"
@@ -100,7 +102,7 @@ func (a *App) instrument(next http.Handler) http.Handler {
 			slog.Info("request",
 				"request_id", sw.Header().Get("x-amz-request-id"),
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", logPath(r.URL.Path),
 				"status", status,
 				"bytes", sw.bytes,
 				"duration_ms", time.Since(start).Milliseconds(),
@@ -122,7 +124,9 @@ func (a *App) router() http.Handler {
 		switch {
 		case strings.HasPrefix(path, "/api/"):
 			console.ServeHTTP(w, r)
-		case path == "/style.css", path == "/app.js", path == "/favicon.ico", strings.HasPrefix(path, "/static/"):
+		case strings.HasPrefix(path, "/s/"):
+			console.ServeHTTP(w, r)
+		case path == "/style.css", path == "/app.js", path == "/share.js", path == "/favicon.ico", strings.HasPrefix(path, "/static/"):
 			console.ServeHTTP(w, r)
 		case path == "/metrics":
 			metricsHandler.ServeHTTP(w, r)
@@ -267,4 +271,15 @@ func (a *App) printBanner() {
 		slog.Warn("HF2S3_DEV is set: insecure defaults are allowed")
 	}
 	slog.Info("HF2S3 gateway started", attrs...)
+}
+
+// logPath hides the secret token of shared links (/s/{token}/...) from logs.
+func logPath(path string) string {
+	if rest, ok := strings.CutPrefix(path, "/s/"); ok {
+		if _, tail, _ := strings.Cut(rest, "/"); tail != "" {
+			return "/s/…/" + tail
+		}
+		return "/s/…"
+	}
+	return path
 }

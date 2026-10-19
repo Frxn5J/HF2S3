@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Archivos compartidos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="share-page">
+  <main class="share-shell">
+    <header class="share-brand">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+          <line x1="12" y1="22.08" x2="12" y2="12"></line>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>HF2S3</h1>
+        <span class="badge-sub">Archivos compartidos</span>
+      </div>
+    </header>
+
+    <section class="glass-card share-notice" id="shareLoading">
+      <p>Abriendo enlace…</p>
+    </section>
+
+    <!-- Link missing, revoked or expired -->
+    <section class="glass-card share-notice is-hidden" id="shareError" role="alert">
+      <div class="share-notice-icon" id="shareErrorIcon" aria-hidden="true">!</div>
+      <h2 id="shareErrorTitle">Enlace no disponible</h2>
+      <p id="shareErrorText"></p>
+    </section>
+
+    <!-- Password gate -->
+    <section class="glass-card share-notice is-hidden" id="shareGate">
+      <div class="share-notice-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+      </div>
+      <h2>Contenido protegido</h2>
+      <p>Quien te envió este enlace lo protegió con contraseña.</p>
+      <form id="shareGateForm" class="share-gate-form">
+        <input type="password" class="input-text" id="shareGatePassword" placeholder="Contraseña" autocomplete="current-password" required />
+        <button type="submit" class="btn btn-primary" id="shareGateButton">Abrir</button>
+      </form>
+      <p class="share-gate-error is-hidden" id="shareGateError" role="alert"></p>
+      <p class="share-expiry" id="shareGateExpiry"></p>
+    </section>
+
+    <!-- Files -->
+    <section class="is-hidden" id="shareView">
+      <div class="files-toolbar share-toolbar">
+        <div class="share-heading">
+          <h2 id="shareTitle">Archivos compartidos</h2>
+          <span class="share-expiry" id="shareExpiry"></span>
+        </div>
+        <a class="btn btn-primary btn-sm" id="shareZipButton" href="#">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <span id="shareZipLabel">Descargar todo (.zip)</span>
+        </a>
+      </div>
+
+      <nav class="share-crumbs" id="shareCrumbs" aria-label="Ruta"></nav>
+
+      <div class="table-container">
+        <table class="data-table share-table">
+          <thead>
+            <tr>
+              <th>Nombre</th>
+              <th class="share-col-size">Tamaño</th>
+              <th class="share-col-date">Modificado</th>
+              <th class="share-col-actions"><span class="sr-only">Acciones</span></th>
+            </tr>
+          </thead>
+          <tbody id="shareRows"></tbody>
+        </table>
+      </div>
+      <div class="share-more is-hidden" id="shareMoreWrap">
+        <button class="btn btn-secondary btn-sm" id="shareMore">Cargar más</button>
+      </div>
+    </section>
+
+    <footer class="share-footer">Servido por HF2S3</footer>
+  </main>
+
+  <!-- Player / preview -->
+  <div class="modal-overlay hidden" id="sharePlayer" role="dialog" aria-modal="true" aria-labelledby="sharePlayerTitle">
+    <div class="modal-card share-player-card">
+      <div class="modal-header">
+        <h3 id="sharePlayerTitle"></h3>
+        <button class="modal-close" id="sharePlayerClose" aria-label="Cerrar">&times;</button>
+      </div>
+      <div class="share-player-stage" id="sharePlayerStage"></div>
+      <p class="share-player-error is-hidden" id="sharePlayerError" role="alert">Tu navegador no puede reproducir este formato. Descárgalo para verlo.</p>
+      <div class="modal-actions">
+        <a class="btn btn-secondary btn-sm" id="sharePlayerDownload" href="#">Descargar</a>
+        <button class="btn btn-primary btn-sm" id="sharePlayerDone">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/share.js"></script>
+</body>
+</html>
